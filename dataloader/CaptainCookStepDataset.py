@@ -243,7 +243,7 @@ class CaptainCookStepDataset(Dataset):
         return step_features, step_labels
 
     def _get_video_features(self, recording_id, step_start_end_list):
-        features_path = os.path.join(self._config.segment_features_directory, "video", self._backbone,
+        features_path = os.path.join(self._config.segment_features_directory, "features/gopro", self._backbone,
                                          f'{recording_id}_360p.mp4_1s_1s.npz')
         features_data = np.load(features_path)
         recording_features = features_data['arr_0']
