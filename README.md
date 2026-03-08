@@ -84,6 +84,42 @@ To extend the baseline evaluation (V1 MLP and V2 Transformer) and analyze the mo
 | **Transformer** | Recordings | Measurement Error | 0.6746 | 0.3007 | 0.3932 | 0.3407 | 0.6180 |
 | **Transformer** | Recordings | Timing Error | 0.6679 | 0.1894 | 0.2747 | 0.2242 | 0.5768 |
 | **Transformer** | Recordings | Temperature Error | 0.6719 | 0.1508 | 0.2405 | 0.1854 | 0.5483 |
+### Methodology: Introduction of a Bidirectional LSTM Baseline
+
+To bridge the gap between the purely frame-independent approach (MLP) and the computationally heavy global-attention approach (Transformer), we proposed and implemented a Bidirectional Long Short-Term Memory (Bi-LSTM) network as a robust third baseline. 
+
+* **Architectural Motivation:** Cooking errors—such as incorrect timing or missed preparation steps—are inherently sequential. Unlike the MLP, which evaluates frames in isolation, the Bi-LSTM processes the chronological sequence of video features. By using a bidirectional configuration, the model evaluates each frame using both past and future contextual dependencies within the step, effectively capturing the flow of the action without the $O(N^2)$ complexity of a Self-Attention mechanism.
+* **Implementation Details:** The custom `ErrorRecognitionLSTM` module ingests sequences of spatial-temporal features (extracted via the Omnivore backbone) into a single-layer Bi-LSTM with a hidden dimension of 256. The concatenated forward and backward hidden states are then passed through a fully connected sequential classifier equipped with ReLU activation and Dropout (0.3) to output frame-level binary probabilities.
+* **Pipeline Integration:** The evaluation parser (`argparse`) and the model factory (`fetch_model`) were extended to natively support the newly introduced `LSTM` variant. This ensured the new model could be seamlessly trained, validated, and evaluated across both the `step` and `recordings` splits using the exact same normalization strategies and metrics as the original baselines.
+
+### Baseline 3: Bidirectional LSTM Performance (Backbone: Omnivore)
+
+#### Table 1: Global Evaluation Metrics
+This table reports the overall Sub-Step and Step level metrics across both data splits.
+
+| Split | Threshold | Level | Accuracy | Precision | Recall | F1-Score | AUC | PR_AUC |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Step** | 0.6 | Sub Step | 0.6952 | 0.4677 | 0.6439 | 0.5418 | 0.7474 | 0.4008 |
+| **Step** | 0.6 | Step | 0.7456 | 0.5839 | 0.6426 | 0.6119 | 0.8020 | 0.4868 |
+| **Recordings** | 0.4 | Sub Step | 0.6405 | 0.4604 | 0.5435 | 0.4985 | 0.6628 | 0.4003 |
+| **Recordings** | 0.4 | Step | 0.5514 | 0.4318 | 0.7884 | 0.5580 | 0.6516 | 0.4164 |
+
+#### Table 2: Performance per Error Type (Step Level)
+This table breaks down the LSTM's ability to classify specific error categories by combining the target error samples with the "Normal" base samples.
+
+| Split | Error Type | Accuracy | Precision | Recall | F1-Score | AUC |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Step** | Preparation Error | 0.7778 | 0.4412 | 0.7143 | 0.5455 | 0.8360 |
+| **Step** | Technique Error | 0.7663 | 0.4213 | 0.6535 | 0.5123 | 0.7957 |
+| **Step** | Measurement Error | 0.7764 | 0.4093 | 0.6991 | 0.5163 | 0.8316 |
+| **Step** | Timing Error | 0.7725 | 0.3838 | 0.6698 | 0.4880 | 0.8147 |
+| **Step** | Temperature Error | 0.7823 | 0.3486 | 0.7176 | 0.4692 | 0.8382 |
+| | | | | | | |
+| **Recordings** | Preparation Error | 0.5018 | 0.2775 | 0.8000 | 0.4120 | 0.6315 |
+| **Recordings** | Technique Error | 0.4818 | 0.2515 | 0.7119 | 0.3717 | 0.5954 |
+| **Recordings** | Measurement Error | 0.4954 | 0.2669 | 0.7778 | 0.3974 | 0.6603 |
+| **Recordings** | Timing Error | 0.4741 | 0.2114 | 0.7363 | 0.3284 | 0.6004 |
+| **Recordings** | Temperature Error | 0.4715 | 0.1935 | 0.7595 | 0.3085 | 0.6069 |
 
 ## Acknowledgements
 

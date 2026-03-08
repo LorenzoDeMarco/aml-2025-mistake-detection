@@ -53,6 +53,34 @@ class MLP1(nn.Module):
         x = self.layer3(x)
         return x
 
+## Pytorch class for the LSTM baseline
+class ErrorRecognitionLSTM(nn.Module):
+    def __init__(self, input_dim, hidden_dim=256, num_layers=1, dropout=0.3):
+        super(ErrorRecognitionLSTM, self).__init__()
+        # Bidirectional = True => double the outgoing hidden_dim
+        self.lstm = nn.LSTM(input_size=input_dim, 
+                            hidden_size=hidden_dim, 
+                            num_layers=num_layers, 
+                            batch_first=True, 
+                            bidirectional=True, 
+                            dropout=dropout if num_layers > 1 else 0.0)
+        # Classifier takes 2 * hidden_dim due to bidirectionality
+        self.classifier = nn.Sequential(
+            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, 1) ## Binary output for each frame
+        )
+    def forward(self, x):
+        # x shape: (Batch=1, Seq_Len=N, Features=D)
+        # Since DataLoader currently returns (N, D), we add the batch dimension
+        if x.dim() == 2:
+            x = x.unsqueeze(0) 
+            
+        lstm_out, _ = self.lstm(x) # lstm_out shape: (Batch, Seq_Len, hidden_dim*2)
+        logits = self.classifier(lstm_out) # logits shape: (Batch, Seq_Len, 1)
+        # Remove the batch dimension to match target shape (N, 1)
+        return logits.squeeze(0)
 
 class CNN(nn.Module):
     def __init__(self, in_channels, final_width, final_height, num_classes):

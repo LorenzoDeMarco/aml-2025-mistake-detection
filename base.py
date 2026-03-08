@@ -14,7 +14,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_sco
 from torcheval.metrics.functional import binary_auprc
 from tqdm import tqdm
 
-from core.models.blocks import fetch_input_dim, MLP
+from core.models.blocks import fetch_input_dim, MLP, ErrorRecognitionLSTM
 from core.models.er_former import ErFormer
 from dataloader.CaptainCookStepDataset import collate_fn, CaptainCookStepDataset
 from dataloader.CaptainCookSubStepDataset import CaptainCookSubStepDataset
@@ -51,7 +51,10 @@ def fetch_model(config):
     elif config.variant == const.TRANSFORMER_VARIANT:
         if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
             model = ErFormer(config)
-
+    elif config.variant == "LSTM": 
+        if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
+            input_dim = fetch_input_dim(config)
+            model = ErrorRecognitionLSTM(input_dim=input_dim, hidden_dim=256)
     assert model is not None, f"Model not found for variant: {config.variant} and backbone: {config.backbone}"
     model.to(config.device)
     return model
@@ -128,7 +131,7 @@ def train_epoch(model, device, train_loader, optimizer, epoch, criterion):
     num_batches = len(train_loader)
     train_losses = []
 
-    for batch_idx, (data, target) in enumerate(train_loader):
+    for batch_idx, (data, target, error_types) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
 
         assert not torch.isnan(data).any(), "Data contains NaN values"
@@ -184,7 +187,7 @@ def train_model_base(train_loader, val_loader, config, test_loader=None):
             num_batches = len(train_loader)
             train_losses = []
 
-            for batch_idx, (data, target) in enumerate(train_loader):
+            for batch_idx, (data, target, error_types) in enumerate(train_loader):
                 data, target = data.to(device), target.to(device)
 
                 assert not torch.isnan(data).any(), "Data contains NaN values"
@@ -266,7 +269,7 @@ def train_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 8,
+        "num_workers": 0,
         "pin_memory": False,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": config.batch_size}
@@ -295,7 +298,7 @@ def train_sub_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 1,
+        "num_workers": 0,
         "pin_memory": False,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": 1024}
