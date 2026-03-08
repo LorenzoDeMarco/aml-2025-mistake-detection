@@ -4,6 +4,9 @@ from base import fetch_model_name, train_step_test_step_dataset_base, train_sub_
 from core.config import Config
 from core.utils import init_logger_and_wandb
 from constants import Constants as const
+from dotenv import load_dotenv
+
+load_dotenv()
 
 
 def train_sub_step_test_step_er(config):

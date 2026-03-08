@@ -18,6 +18,7 @@ from core.models.blocks import fetch_input_dim, MLP
 from core.models.er_former import ErFormer
 from dataloader.CaptainCookStepDataset import collate_fn, CaptainCookStepDataset
 from dataloader.CaptainCookSubStepDataset import CaptainCookSubStepDataset
+from collections import defaultdict
 
 
 def fetch_model_name(config):
@@ -325,6 +326,7 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     total_samples = 0
     all_targets = []
     all_outputs = []
+    all_error_types = []
 
     test_loader = tqdm(test_loader)
     num_batches = len(test_loader)
@@ -334,7 +336,7 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     counter = 0
 
     with torch.no_grad():
-        for data, target in test_loader:
+        for data, target, error_types in test_loader:
             data, target = data.to(device), target.to(device)
             output = model(data)
             total_samples += data.shape[0]
@@ -344,6 +346,7 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
             sigmoid_output = output.sigmoid()
             all_outputs.append(sigmoid_output.detach().cpu().numpy().reshape(-1))
             all_targets.append(target.detach().cpu().numpy().reshape(-1))
+            all_error_types.extend(error_types)
 
             test_step_start_end_list.append((counter, counter + data.shape[0]))
             counter += data.shape[0]
@@ -383,13 +386,21 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     # -------------------------- Step Level Metrics --------------------------
     all_step_targets = []
     all_step_outputs = []
+    all_step_error_types = []
 
     # threshold_outputs = all_outputs / max_probability
 
     for start, end in test_step_start_end_list:
         step_output = all_outputs[start:end]
         step_target = all_targets[start:end]
+        dominant_error = "Normal"
+        step_errors = all_error_types[start:end]
 
+        actual_errors = [e for e in step_errors if e != "Normal"]
+        if len(actual_errors) > 0:
+            dominant_error = max(set(actual_errors), key=actual_errors.count)
+
+        all_step_error_types.append(dominant_error)
         # sorted_step_output = np.sort(step_output)
         # # Top 50% of the predictions
         # threshold = np.percentile(sorted_step_output, 50)
@@ -431,7 +442,11 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     f1 = f1_score(all_step_targets, pred_step_labels)
     accuracy = accuracy_score(all_step_targets, pred_step_labels)
 
-    auc = roc_auc_score(all_step_targets, all_step_outputs)
+    try:
+        auc = roc_auc_score(all_step_targets, all_step_outputs)
+    except ValueError:
+        auc = float('nan')
+
     pr_auc = binary_auprc(torch.tensor(pred_step_labels), torch.tensor(all_step_targets))
 
     step_metrics = {
@@ -448,5 +463,39 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     print(f'{phase} Sub Step Level Metrics: {sub_step_metrics}')
     print(f"{phase} Step Level Metrics: {step_metrics}")
     print("----------------------------------------------------------------")
+    if phase == "test" or phase == "val":
+        print("\n------------------- PERFORMANCE FOR ERROR TYPES (STEP LEVEL) -------------------")
+        indices_by_error = defaultdict(list)
+        normal_indices = []
 
+        for i, e_type in enumerate(all_step_error_types):
+            if e_type == "Normal":
+                normal_indices.append(i)
+            else:
+                indices_by_error[e_type].append(i)
+        print(f"Values: {len(indices_by_error)} and Normal: {len(normal_indices)}")
+        for e_type, error_indices in indices_by_error.items():
+            combined_indices = normal_indices + error_indices
+            
+            y_true = [all_step_targets[i] for i in combined_indices]
+            y_pred = [pred_step_labels[i] for i in combined_indices]
+            y_score = [all_step_outputs[i] for i in combined_indices]
+            
+            if len(set(y_true)) < 2:
+                print(f"[{e_type}] - Impossible calculate the AUC (Classes not found). Error samples: {len(error_indices)}")
+                continue
+            
+            acc = accuracy_score(y_true, y_pred)
+            prec = precision_score(y_true, y_pred, zero_division=0)
+            rec = recall_score(y_true, y_pred, zero_division=0)
+            f1_sc = f1_score(y_true, y_pred, zero_division=0)
+            auc_val = roc_auc_score(y_true, y_score)
+            
+            print(f"[{e_type}] (Normal samples: {len(normal_indices)} vs Errors: {len(error_indices)})")
+            print(f"   Accuracy:  {acc:.4f}")
+            print(f"   Precision: {prec:.4f}")
+            print(f"   Recall:    {rec:.4f}")
+            print(f"   F1-Score:  {f1_sc:.4f}")
+            print(f"   AUC:       {auc_val:.4f}\n")
+        print("-----------------------------------------------------------------------------------")
     return test_losses, sub_step_metrics, step_metrics
