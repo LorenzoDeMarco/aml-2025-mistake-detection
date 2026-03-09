@@ -16,6 +16,7 @@ from tqdm import tqdm
 
 from core.models.blocks import fetch_input_dim, MLP
 from core.models.er_former import ErFormer
+from core.models.LSTM import LSTMModel
 from dataloader.CaptainCookStepDataset import collate_fn, CaptainCookStepDataset
 from dataloader.CaptainCookSubStepDataset import CaptainCookSubStepDataset
 
@@ -50,6 +51,14 @@ def fetch_model(config):
     elif config.variant == const.TRANSFORMER_VARIANT:
         if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
             model = ErFormer(config)
+    #aggiungiamo LSTM
+    elif config.variant == const.LSTM_VARIANT:
+        if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
+            input_dim = fetch_input_dim(config)
+            model= LSTMModel(input_dim,256,2,1)
+            # model= LSTMModel(input_dim,512,2,1) # usiamo 2 layer per aumentare la profondità
+
+
 
     assert model is not None, f"Model not found for variant: {config.variant} and backbone: {config.backbone}"
     model.to(config.device)
@@ -153,10 +162,10 @@ def train_model_base(train_loader, val_loader, config, test_loader=None):
     model = fetch_model(config)
     device = config.device
     optimizer = optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([2.5], dtype=torch.float32).to(device))
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([10.0], dtype=torch.float32).to(device))
     scheduler = ReduceLROnPlateau(
         optimizer, mode='max',
-        factor=0.1, patience=5, verbose=True,
+        factor=0.1, patience=5,
         threshold=1e-4, threshold_mode="abs", min_lr=1e-7
     )
     # criterion = nn.BCEWithLogitsLoss()
@@ -265,7 +274,7 @@ def train_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 8,
+        "num_workers": 0,
         "pin_memory": False,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": config.batch_size}
@@ -342,6 +351,7 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
             test_losses.append(loss.item())
 
             sigmoid_output = output.sigmoid()
+            #print(f"Output stats - Min: {sigmoid_output.min()}, Max: {sigmoid_output.max()}, Mean: {sigmoid_output.mean()}")
             all_outputs.append(sigmoid_output.detach().cpu().numpy().reshape(-1))
             all_targets.append(target.detach().cpu().numpy().reshape(-1))
 

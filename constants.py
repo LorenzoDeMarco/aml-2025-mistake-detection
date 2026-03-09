@@ -45,6 +45,7 @@ class Constants:
 
     MLP_VARIANT = "MLP"
     TRANSFORMER_VARIANT = "Transformer"
+    LSTM_VARIANT= "LSTM"
     MULTIMODAL_VARIANT = "Multimodal"
 
     # ----------------------- WANDB CONSTANTS -----------------------

@@ -1,5 +1,6 @@
 from argparse import ArgumentParser
 from constants import Constants as const
+import os
 
 
 class Config(object):
@@ -17,7 +18,7 @@ class Config(object):
         # Use this for 1 sec video features
         self.segment_features_directory = "data/"
 
-        self.ckpt_directory = "/data/rohith/captain_cook/checkpoints/"
+        self.ckpt_directory = os.path.join(os.path.dirname(__file__), "../checkpoints")
         self.split = "recordings"
         self.batch_size = 1
         self.test_batch_size = 1
@@ -41,6 +42,11 @@ class Config(object):
         self.args = vars(self.parser.parse_args())
         self.save_model = True
         self.__dict__.update(self.args)
+        # after applying CLI args, determine device if not explicitly set
+        if self.device is None:
+            # choose cuda only if it's available
+            import torch
+            self.device = "cuda" if torch.cuda.is_available() else "cpu"
 
     def setup_parser(self):
         """
@@ -69,6 +75,7 @@ class Config(object):
         parser.add_argument("--task_name", type=str, default=const.ERROR_RECOGNITION, help="task name")
         parser.add_argument("--error_category", type=str, help="error category")
         parser.add_argument("--modality", type=str, nargs="+", default=[const.VIDEO], help="audio")
+        parser.add_argument("--device", type=str, default=None, help="compute device: cuda or cpu")
 
         return parser
 
