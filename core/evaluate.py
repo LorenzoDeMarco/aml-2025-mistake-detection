@@ -29,6 +29,7 @@ class Config(object):
 
     variant: str = const.TRANSFORMER_VARIANT
     task_name: str = const.ERROR_RECOGNITION
+    error_category: Optional[str] = None
 
 
 def eval_er(config, threshold):
@@ -55,6 +56,8 @@ if __name__ == "__main__":
     parser.add_argument("--modality", type=str, choices=[const.VIDEO])
     parser.add_argument("--ckpt", type=str, required=True)
     parser.add_argument("--threshold", type=float, required=True, default=0.5)
+    parser.add_argument("--task_name", type=str, default=const.ERROR_RECOGNITION, help="task name")
+    parser.add_argument("--error_category", type=str, help="error category")
     args = parser.parse_args()
 
     conf = Config()
@@ -64,5 +67,6 @@ if __name__ == "__main__":
     conf.phase = args.phase
     conf.modality = args.modality
     conf.ckpt_directory = args.ckpt
-
+    conf.task_name = args.task_name
+    conf.error_category = args.error_category
     eval_er(conf, args.threshold)
