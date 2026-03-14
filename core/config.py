@@ -13,7 +13,11 @@ class Config(object):
         self.modality = "video"
         self.phase = "train"
         self.segment_length = 1
-
+        
+        # LSTM specific parameters
+        self.lstm_hidden_dim = 256
+        self.lstm_layers = 2
+        
         # Use this for 1 sec video features
         self.segment_features_directory = "data/"
 
