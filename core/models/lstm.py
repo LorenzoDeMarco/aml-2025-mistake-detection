@@ -30,17 +30,18 @@ class LSTMModel(nn.Module):
         )
 
     def forward(self, x):
-        # x shape: [Batch, Time, Features] 
+        # x shape: [Batch, Time, Features]
         x = torch.nan_to_num(x, nan=0.0)
         
         # lstm_out: [Batch, Time, Hidden*2]
-        # h_n: [Layers*2, Batch, Hidden]
         _, (h_n, _) = self.lstm(x)
         
-        h_fwd = h_n[-2, :, :] # Shape: [Batch, Hidden]
-        h_bwd = h_n[-1, :, :] # Shape: [Batch, Hidden]
+        h_fwd = h_n[-2] 
+        h_bwd = h_n[-1]
+   
+        combined_state = torch.cat([h_fwd, h_bwd], dim=-1)
         
-        # [Batch, Hidden*2] -> [1, 512]
-        combined_state = torch.cat([h_fwd, h_bwd], dim=1)
-        
+        if combined_state.dim() == 1:
+            combined_state = combined_state.unsqueeze(0)
+            
         return self.classifier(combined_state)
