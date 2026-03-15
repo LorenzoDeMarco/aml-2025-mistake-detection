@@ -29,12 +29,14 @@ def load_backbone():
     
     print("Loading EgoVLP weights...")
     
-    temp_posix = pathlib.PosixPath
-    pathlib.PosixPath = pathlib.WindowsPath
+    if os.name == 'nt':
+        temp_posix = pathlib.PosixPath
+        pathlib.PosixPath = pathlib.WindowsPath
+        
+    checkpoint = torch.load(WEIGHTS_PATH, map_location=device, weights_only=False)
     
-    checkpoint = torch.load(WEIGHTS_PATH, map_location=device)
-    
-    pathlib.PosixPath = temp_posix
+    if os.name == 'nt':
+        pathlib.PosixPath = temp_posix
     model.load_state_dict(checkpoint['state_dict'], strict=False)
     
     model.eval()
