@@ -4,3 +4,4 @@
 [submodule "EgoVLP"]
 	path = EgoVLP
 	url = https://github.com/showlab/EgoVLP.git
+	ignore = untracked
