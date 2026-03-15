@@ -169,3 +169,5 @@ error_recognition_best
 
 results
 .vscode
+pretrained/
+feature_extraction/egovlp.pth
