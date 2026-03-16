@@ -56,7 +56,7 @@ def fetch_model(config):
         if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
             input_dim = fetch_input_dim(config)
             model= LSTMModel(input_dim,256,2,1)
-            # model= LSTMModel(input_dim,512,2,1) # usiamo 2 layer per aumentare la profondità
+            # model= LSTMModel(input_dim,512,2,1) # userebbe troppa memoria
 
 
 
@@ -162,7 +162,8 @@ def train_model_base(train_loader, val_loader, config, test_loader=None):
     model = fetch_model(config)
     device = config.device
     optimizer = optim.Adam(model.parameters(), lr=config.lr, weight_decay=config.weight_decay)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([10.0], dtype=torch.float32).to(device))
+    #criterion = nn.BCEWithLogitsLoss()
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([2.5], dtype=torch.float32).to(device))
     scheduler = ReduceLROnPlateau(
         optimizer, mode='max',
         factor=0.1, patience=5,

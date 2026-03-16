@@ -4,51 +4,63 @@ from torch import nn
 class LSTMModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, layer_dim, output_dim):
         super(LSTMModel, self).__init__()
-        # Hidden dimensions
+        
         self.hidden_dim = hidden_dim
-        
-        # Number of hidden layers
         self.layer_dim = layer_dim
-
         self.output_dim = output_dim
+        dropout=0.3 
         
-        # Building your LSTM
-        # batch_first=True causes input/output tensors to be of shape
-        # (batch_dim, seq_dim, feature_dim)
-        self.lstm = nn.LSTM(input_dim, hidden_dim, layer_dim, batch_first=True)
+        # LSTM Bidirezionale
+        # Nota: num_layers=layer_dim, bidirectional=True
+        self.lstm = nn.LSTM(
+            input_dim, 
+            hidden_dim, 
+            layer_dim, 
+            bidirectional=True, # usiamo una LSTM bidirezionale per migliorare le prestazioni
+            batch_first=True,
+            dropout=dropout
+        )
 
-        # Dropout layer
-        self.dropout = nn.Dropout(0.2)
-        
-        # Readout layer
-        self.fc = nn.Linear(hidden_dim, output_dim)
+        # Il livello Fully Connected riceve hidden_dim (forward only) o hidden_dim*2  (bidirezionale)
+        self.fc = nn.Sequential( # Funnel Architecture
+            nn.Linear(hidden_dim *2, hidden_dim ), # Moltiplichiamo per 2 perché è bidirezionale
+            nn.GELU(), # usiamo la GELU più performante della classica RELU 
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, output_dim)
+            
+        )
     
     def forward(self, x):
-        # Handle 2D input (seq, features) by adding batch dimension
+        # 1. Gestione input 2D (seq, features) -> (1, seq, features)
         if x.dim() == 2:
-            x = x.unsqueeze(0)  # Add batch dimension: (1, seq, features)
+            x = x.unsqueeze(0)
         
         batch_size = x.size(0)
-        # Initialize hidden state with zeros
-        h0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim).to(x.device)
+        device = x.device
+
+        # 2. CORREZIONE: In una biLSTM, il numero di layer per h0/c0 deve essere:
+        # layer_dim * 2 (uno per la direzione forward, uno per backward)
+        num_directions = 2 if self.lstm.bidirectional else 1
+        #h0 = torch.zeros(self.layer_dim * num_directions, batch_size, self.hidden_dim).to(device)
+        #c0 = torch.zeros(self.layer_dim * num_directions, batch_size, self.hidden_dim).to(device)
         
-        # Initialize cell state
-        c0 = torch.zeros(self.layer_dim, x.size(0), self.hidden_dim).to(x.device)
+        # 3. Passaggio nella LSTM
+        # rimosso .detach() a meno che tu non faccia BPTT troncato manualmente
+        out, _ = self.lstm(x)
         
-        # One time step
-        # We need to detach as we are doing truncated backpropagation through time (BPTT)
-        # If we don't, we'll backprop all the way to the start even after going through another batch
-        out, (hn, cn) = self.lstm(x, (h0.detach(), c0.detach()))
+        # out shape: (batch_size, seq_len, hidden_dim * 2)
         
-        # Index hidden state of last time step
-        #out.size() --> 512, 1024, 512
-        # out[:, -1, :] --> 512, 1 --> just want last time step hidden states! 
-        #out = self.fc(out[:, -1, :]) 
-        # out.size() --> 512, 1
-        #return out
-        # Apply fc to all time steps (not just the last)
-        out = self.fc(out)  # (batch_size, seq_len, output_dim)
+        # 4. Applicazione del readout layer a ogni istante temporale
+        out = self.fc(out)  # shape: (batch_size, seq_len, output_dim)
         
-        # Flatten to (batch_size * seq_len, output_dim) for compatibility
-        return out.view(-1, self.output_dim)
+        # 5. Ritorno in formato flat (batch, seq_len) se richiesto dalla loss
+        #res= out.view(-1, self.output_dim)
+
+        #print(f"Output shape after FC: {out.shape}, Reshape to: {res.shape}")
+        #print(f"Output sample: {res[0]}")  # Stampa un campione per debug
+
+        return out.squeeze(0)  # rimuove l'ultima dimensione se output_dim=1
         
