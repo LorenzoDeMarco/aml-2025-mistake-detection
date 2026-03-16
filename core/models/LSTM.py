@@ -37,7 +37,7 @@ class LSTMModel(nn.Module):
         # 1. Gestione input 2D (seq, features) -> (1, seq, features)
         if x.dim() == 2:
             x = x.unsqueeze(0)
-        
+        #print(f"Input iniziale: {x.shape}")
         batch_size = x.size(0)
         device = x.device
 
@@ -52,15 +52,18 @@ class LSTMModel(nn.Module):
         out, _ = self.lstm(x)
         
         # out shape: (batch_size, seq_len, hidden_dim * 2)
+        #print(f"Output LSTM shape: {out.shape}")
         
         # 4. Applicazione del readout layer a ogni istante temporale
         out = self.fc(out)  # shape: (batch_size, seq_len, output_dim)
         
         # 5. Ritorno in formato flat (batch, seq_len) se richiesto dalla loss
+        #print(f"Output shape dopo FC: {out.shape}")
         #res= out.view(-1, self.output_dim)
-
+       
         #print(f"Output shape after FC: {out.shape}, Reshape to: {res.shape}")
         #print(f"Output sample: {res[0]}")  # Stampa un campione per debug
-
-        return out.squeeze(0)  # rimuove l'ultima dimensione se output_dim=1
+        out = out.squeeze(0) # rimuove l'ultima dimensione se output_dim=1
+        #print(f"Output finale dopo squeeze: {out.shape}")
+        return  out
         
