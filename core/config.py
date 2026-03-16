@@ -17,11 +17,11 @@ class Config(object):
         # LSTM specific parameters
         self.lstm_hidden_dim = 256
         self.lstm_layers = 2
-        
+
         # Use this for 1 sec video features
         self.segment_features_directory = "data/"
 
-        self.ckpt_directory = "/data/rohith/captain_cook/checkpoints/"
+        self.ckpt_directory = "./checkpoints"
         self.split = "recordings"
         self.batch_size = 1
         self.test_batch_size = 1
