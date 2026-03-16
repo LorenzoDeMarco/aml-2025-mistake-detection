@@ -21,7 +21,7 @@ class Config(object):
         # Use this for 1 sec video features
         self.segment_features_directory = "data/"
 
-        self.ckpt_directory = "./checkpoints"
+        self.ckpt_directory = "/content/drive/MyDrive/AML_Project/checkpoints"
         self.split = "recordings"
         self.batch_size = 1
         self.test_batch_size = 1
