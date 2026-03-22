@@ -18,6 +18,11 @@ class CaptainCookStepDataset(Dataset):
 
         self._modality = config.modality
 
+        #setup1: open meta info for error type analysis
+        # When True, __getitem__ will also return meta (recording_id, step_id, error_tags)
+        # Default False keeps training code unchanged.
+        self._return_meta = bool(getattr(config, 'return_meta', False))
+        
         with open('annotations/annotation_json/step_annotations.json', 'r') as f:
             self._annotations = json.load(f)
 
@@ -55,17 +60,27 @@ class CaptainCookStepDataset(Dataset):
 
     def _build_error_category_labels(self):
         self._recording_step_error_labels = {}
+        #setup1: open meta info for error type analysis
+        # Integer labels used by ERROR_CATEGORY_RECOGNITION task
+        # Raw error tags stored for per-error-type analysis
+        self._recording_step_error_tags = {}
+        
         for recording_step_dictionary in self._error_annotations:
             recording_id = recording_step_dictionary['recording_id']
             self._recording_step_error_labels[recording_id] = {}
+            #setup1: open meta info for error type analysis
+            self._recording_step_error_tags[recording_id] = {}
             for step_annotation_dict in recording_step_dictionary['step_annotations']:
                 step_id = step_annotation_dict['step_id']
                 self._recording_step_error_labels[recording_id][step_id] = set()
+                #setup1: open meta info for error type analysis
+                self._recording_step_error_tags[recording_id][step_id] = set()
                 if "errors" not in step_annotation_dict:
                     self._recording_step_error_labels[recording_id][step_id].add(0)
                 else:
                     for error_dict in step_annotation_dict['errors']:
                         error_tag = error_dict['tag']
+                        self._recording_step_error_tags[recording_id][step_id].add(error_tag)
                         if error_tag in self._error_category_name_label_map:
                             error_label = self._error_category_name_label_map[error_tag]
                         else:
@@ -118,11 +133,12 @@ class CaptainCookStepDataset(Dataset):
             for step_id in recording_step_dictionary.keys():
                 # If the step has errors, add it to the error_step_dict, else add it to the normal_step_dict
                 if recording_step_dictionary[step_id][0][2]:
-                    self._error_step_dict[f'E{error_index_id}'] = (recording_id, recording_step_dictionary[step_id])
+                    #setup1: open meta info for error type analysis
+                    self._error_step_dict[f'E{error_index_id}'] = (recording_id, step_id, recording_step_dictionary[step_id])
                     error_index_id += 1
                 else:
-                    self._normal_step_dict[f'N{normal_index_id}'] = (
-                        recording_id, recording_step_dictionary[step_id])
+                    #setup1: open meta info for error type analysis
+                    self._normal_step_dict[f'N{normal_index_id}'] = (recording_id, step_id, recording_step_dictionary[step_id])
                     normal_index_id += 1
 
             np.random.seed(config.seed)
@@ -187,7 +203,8 @@ class CaptainCookStepDataset(Dataset):
 
             # 2. Add step start and end time list to the step_dict
             for step_id in recording_step_dictionary.keys():
-                self._step_dict[index_id] = (recording_id, recording_step_dictionary[step_id])
+                #setup1: return meta info for error analysis
+                self._step_dict[index_id] = (recording_id, step_id, recording_step_dictionary[step_id])
                 index_id += 1
 
     def __len__(self):
@@ -243,37 +260,86 @@ class CaptainCookStepDataset(Dataset):
         return step_features, step_labels
 
     def _get_video_features(self, recording_id, step_start_end_list):
-        features_path = os.path.join(self._config.segment_features_directory, "video", self._backbone,
-                                         f'{recording_id}_360p.mp4_1s_1s.npz')
-        features_data = np.load(features_path)
-        recording_features = features_data['arr_0']
-
-        step_features, step_labels = self._build_modality_step_features_labels(recording_features, step_start_end_list)
-        features_data.close()
+        if self._backbone in [const.OMNIVORE, const.SLOWFAST]:
+            features_path = os.path.join(
+                self._config.segment_features_directory,
+                "features",
+                self._backbone,
+                f'{recording_id}_360p.mp4_1s_1s.npz'
+            )
+            features_data = np.load(features_path)
+            recording_features = features_data['arr_0']
+        elif self._backbone == const.EGOVLP:
+            features_path = os.path.join(
+                self._config.segment_features_directory,
+                "features",
+                "egovlp",
+                f'{recording_id}.npy'
+            )
+            recording_features = np.load(features_path)
+        elif self._backbone == const.PERCEPTION_ENCODER:
+            features_path = os.path.join(
+                self._config.segment_features_directory,
+                "features",
+                "perception_encoder",
+                f'{recording_id}_360p.mp4_1s_1s.npz'
+            )
+            with np.load(features_path) as f:
+                arr = f["arr_0"] if "arr_0" in f.files else f[f.files[0]]
+            recording_features = arr
+        else:
+            raise ValueError(f"Unsupported backbone: {self._backbone}")
+        step_features, step_labels = self._build_modality_step_features_labels(
+            recording_features, step_start_end_list
+        )
         return step_features, step_labels
 
     def __getitem__(self, idx):
-        recording_id = self._step_dict[idx][0]
-        step_start_end_list = self._step_dict[idx][1]
+        #setup1: return meta info for error analysis
+        recording_id, step_id, step_start_end_list = self._step_dict[idx]
+
 
         step_features = None
         step_labels = None
         
-        assert self._backbone in [const.OMNIVORE, const.SLOWFAST], "Only Omnivore and SlowFast are supported with this codebase"
+        assert self._backbone in [const.OMNIVORE, const.SLOWFAST, const.EGOVLP, const.PERCEPTION_ENCODER], "Only Omnivore and SlowFast are supported with this codebase"
         step_features, step_labels = self._get_video_features(recording_id, step_start_end_list)
 
         assert step_features is not None, f"Features not found for recording_id: {recording_id}"
         assert step_labels is not None, f"Labels not found for recording_id: {recording_id}"
 
-        return step_features, step_labels
+        #setup1: return meta info for error analysis
+        if not self._return_meta:
+            return step_features, step_labels
+
+        error_tags = sorted(list(self._recording_step_error_tags.get(recording_id, {}).get(step_id, set())))
+        meta = {
+            "recording_id": recording_id,
+            "step_id": int(step_id),
+            "error_tags": error_tags,
+        }
+        return step_features, step_labels, meta
 
 
 def collate_fn(batch):
     # batch is a list of tuples, and each tuple is (step_features, step_labels)
-    step_features, step_labels = zip(*batch)
+    # step_features, step_labels = zip(*batch)
 
     # Stack the step_features and step_labels
-    step_features = torch.cat(step_features, dim=0)
-    step_labels = torch.cat(step_labels, dim=0)
+    #setup1: return meta info for error analysis
+    if len(batch) == 0:
+        raise ValueError("Empty batch passed to collate_fn")
 
-    return step_features, step_labels
+    if len(batch[0]) == 2:
+        step_features, step_labels = zip(*batch)
+        step_features = torch.cat(step_features, dim=0)
+        step_labels = torch.cat(step_labels, dim=0)
+        return step_features, step_labels
+
+    if len(batch[0]) == 3:
+        step_features, step_labels, metas = zip(*batch)
+        step_features = torch.cat(step_features, dim=0)
+        step_labels = torch.cat(step_labels, dim=0)
+        return step_features, step_labels, list(metas)
+
+    raise ValueError(f"Unexpected batch item length: {len(batch[0])}")
