@@ -14,9 +14,15 @@ Then, download the pre-extracted features for 1s segments and put them in the `d
 ## Step 1: Baselines reproduction
 Download the official best checkpoints from [here](https://utdallas.app.box.com/s/uz3s1alrzucz03sleify8kazhuc1ksl3) (`error_recognition_best` directory) and place them in the `checkpoints`. Then run the evaluation for the error recognition task.
 
-**Example command**:
+**Commands**:
 ```
 python -m core.evaluate --variant MLP --backbone omnivore --ckpt checkpoints/error_recognition_best/MLP/omnivore/error_recognition_MLP_omnivore_step_epoch_43.pt --split step --threshold 0.6
+
+python -m core.evaluate --variant MLP --backbone omnivore --ckpt checkpoints\error_recognition_best\MLP\omnivore\error_recognition_MLP_omnivore_recordings_epoch_33.pt --split recordings --threshold 0.4
+
+python -m core.evaluate --variant Transformer --backbone omnivore --ckpt checkpoints\error_recognition_best\Transformer\omnivore\error_recognition_Transformer_omnivore_step_epoch_9.pt --split step --threshold 0.6
+
+python -m core.evaluate --variant Transformer --backbone omnivore --ckpt checkpoints\error_recognition_best\Transformer\omnivore\error_recognition_Transformer_omnivore_recordings_epoch_31.pt --split recordings --threshold 0.4
 ```
 
 You should be able to reproduce results close to those reported in the paper (Table 2):
@@ -92,7 +98,20 @@ To bridge the gap between the purely frame-independent approach (MLP) and the co
 * **Implementation Details:** The custom `ErrorRecognitionLSTM` module ingests sequences of spatial-temporal features (extracted via the Omnivore backbone) into a single-layer Bi-LSTM with a hidden dimension of 256. The concatenated forward and backward hidden states are then passed through a fully connected sequential classifier equipped with ReLU activation and Dropout (0.3) to output frame-level binary probabilities.
 * **Pipeline Integration:** The evaluation parser (`argparse`) and the model factory (`fetch_model`) were extended to natively support the newly introduced `LSTM` variant. This ensured the new model could be seamlessly trained, validated, and evaluated across both the `step` and `recordings` splits using the exact same normalization strategies and metrics as the original baselines.
 
+**Commands**:
+```
+python -m train_er --variant LSTM --backbone omnivore --split step --batch_size 32 --lr 0.001 --num_epochs 50 --ckpt_directory checkpoints
+
+python -m train_er --variant LSTM --backbone omnivore --split recordings --batch_size 32 --lr 0.001 --num_epochs 50 --ckpt_directory checkpoints
+```
+
 ### Baseline 3: Bidirectional LSTM Performance (Backbone: Omnivore)
+**Commands**:
+```
+python -m core.evaluate --variant LSTM --backbone omnivore --ckpt checkpoints\error_recognition_best\LSTM\omnivore\error_recognition_step_omnivore_LSTM_video_epoch_16.pt --split step --threshold 0.6
+
+python -m core.evaluate --variant LSTM --backbone omnivore --ckpt checkpoints\error_recognition_best\LSTM\omnivore\error_recognition_recordings_omnivore_LSTM_video_epoch_5.pt --split recordings --threshold 0.4
+```
 
 #### Table 1: Global Evaluation Metrics
 This table reports the overall Sub-Step and Step level metrics across both data splits.

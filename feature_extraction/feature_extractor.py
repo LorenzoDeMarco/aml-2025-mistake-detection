@@ -43,6 +43,7 @@ def load_backbone():
     model.to(device)
     
     return model
+
 def preprocess_frames(frames):
     # Frames from decord are in (Time, Height, Width, Channels) uint8 format
     frames = frames.float() / 255.0
@@ -65,77 +66,66 @@ def preprocess_frames(frames):
     
     return frames.to(device)
 
-def process_video(video_path, model):
+def process_video(video_path, model, target_hz=1.875, window_size=16):
     vr = VideoReader(video_path, ctx=cpu(0))
     total_frames = len(vr)
     fps = vr.get_avg_fps()
-    duration_sec = int(total_frames / fps)
     
-    # ACTIONFORMER POLICY (dense extraction)
-    WINDOW_SIZE = 16 
-    STRIDE = 16       
+    # Dynamic stride calculation based on target frequency and native FPS
+    stride = int(round(fps / target_hz))
     
-    features_per_sec = {sec: [] for sec in range(duration_sec + 1)}
+    # Safety check to prevent infinite loops if the target frequency is exceptionally high
+    if stride < 1:
+        stride = 1
+        
+    aggregated_features = []
     
     with torch.no_grad():
-        for start_frame in range(0, total_frames - WINDOW_SIZE + 1, STRIDE):
-            end_frame = start_frame + WINDOW_SIZE
-            center_frame = start_frame + (WINDOW_SIZE // 2)
-            sec_idx = min(int(center_frame / fps), duration_sec)
-            
+        for start_frame in range(0, total_frames - window_size + 1, stride):
+            end_frame = start_frame + window_size
             frame_indices = list(range(start_frame, end_frame))
-            batch = vr.get_batch(frame_indices)
             
+            batch = vr.get_batch(frame_indices)
             frames = batch if isinstance(batch, torch.Tensor) else torch.from_numpy(batch.asnumpy())
             
             input_tensor = preprocess_frames(frames)
             
-            # In Dual-Encoder models like FrozenInTime, we only need to compute video features
-            # The "compute_video" method performs the forward pass only on the visual encoder
             if hasattr(model, 'compute_video'):
                 features = model.compute_video(input_tensor)
             else:
-                # Fallback in case the implementation uses a conditional forward pass
                 output = model(video=input_tensor)
                 features = output['video_embeds'] if isinstance(output, dict) else output
                 
             features = features.squeeze().cpu().numpy()
-            features_per_sec[sec_idx].append(features)
+            aggregated_features.append(features)
             
-    aggregated_features = []
-    feature_dim = None
-
-    for sec in range(duration_sec):
-        if len(features_per_sec[sec]) > 0:
-            sec_feature = np.mean(features_per_sec[sec], axis=0)
-            if feature_dim is None:
-                feature_dim = sec_feature.shape
-        else:
-            if feature_dim is not None:
-                sec_feature = np.zeros(feature_dim)
-            else:
-                continue
-        aggregated_features.append(sec_feature)
-        
     return np.vstack(aggregated_features) if aggregated_features else np.empty((0, 0))
 
 def main():
     model = load_backbone()
     video_files = [f for f in os.listdir(VIDEO_DIR) if f.endswith('.mp4')]
     
-    for video_filename in tqdm(video_files, desc="EgoVLP Extraction"):
+    # --- EXTRACTION CONFIGURATION ---
+    TARGET_HZ = 1.875
+    WINDOW_SIZE = 16
+    # --------------------------------
+    
+    for video_filename in tqdm(video_files, desc="EgoVLP Feature Extraction"):
         video_path = os.path.join(VIDEO_DIR, video_filename)
         
         recording_id = video_filename.replace('.mp4', '').replace('_360p', '') 
-        output_filename = f"{recording_id}_360p.mp4_1s_1s.npz"
+        
+        # Generate the output filename reflecting the chosen frequency
+        output_filename = f"{recording_id}_360p.mp4_{TARGET_HZ}hz.npz"
         output_path = os.path.join(OUTPUT_DIR, output_filename)
         
         if os.path.exists(output_path):
             continue
             
-        features_matrix = process_video(video_path, model)
+        features_matrix = process_video(video_path, model, target_hz=TARGET_HZ, window_size=WINDOW_SIZE)
+        
         if features_matrix.size > 0:
             np.savez(output_path, arr_0=features_matrix)
 
 if __name__ == "__main__":
-    main()  
+    main()
