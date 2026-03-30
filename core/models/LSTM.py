@@ -8,7 +8,7 @@ class LSTMModel(nn.Module):
         self.hidden_dim = hidden_dim
         self.layer_dim = layer_dim
         self.output_dim = output_dim
-        dropout=0.3 
+        dropout=0.5 
         
         # LSTM Bidirezionale
         # Nota: num_layers=layer_dim, bidirectional=True
@@ -23,6 +23,7 @@ class LSTMModel(nn.Module):
 
         # Il livello Fully Connected riceve hidden_dim (forward only) o hidden_dim*2  (bidirezionale)
         self.fc = nn.Sequential( # Funnel Architecture
+            nn.LayerNorm(hidden_dim * 2), # Normalizzazione per stabilizzare l'addestramento
             nn.Linear(hidden_dim *2, hidden_dim ), # Moltiplichiamo per 2 perché è bidirezionale
             nn.GELU(), # usiamo la GELU più performante della classica RELU 
             nn.Dropout(dropout),

@@ -30,6 +30,15 @@ You should be able to reproduce results close to those reported in the paper (Ta
 
 **NOTE**: Use the thresholds indicated in the official README.md of project (0.6 for step and 0.4 for recordings steps).
 
+## LSTM result 
+
+I've decided to use a 2-layer Bidirectional LSTM with a funnel architecture that helps the model to learn in a less aggressive way how to classify the frames
+
+| Split | Model | F1 | AUC |
+|-------|-------|----|-----|
+| Step | LSTM (Omnivore) | 60.97 | 79.69 |
+| Recordings | LSTM (Omnivore) | 47.41 | 61.80 |
+
 ## Acknowledgements
 
 This project builds on many repositories from the CaptainCook4D release. Please refer to the original codebases for more details.
