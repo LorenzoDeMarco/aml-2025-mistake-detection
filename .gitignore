@@ -169,3 +169,9 @@ error_recognition_best
 
 results
 .vscode
+
+# Ignora i pesanti risultati dell'addestramento
+output_actionFormer/
+*.pth.tar
+*.npy
+*.npz
