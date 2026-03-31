@@ -39,6 +39,48 @@ I've decided to use a 2-layer Bidirectional LSTM with a funnel architecture that
 | Step | LSTM (Omnivore) | 60.97 | 79.69 |
 | Recordings | LSTM (Omnivore) | 47.41 | 61.80 |
 
+## Recipe step Localization 
+
+For the recipe step localization We have forked and modified  the CaptainCook repo Multi_Step_localization: https://github.com/CaptainCook4D/multi_step_localization
+
+So initially i've created the Action former annotations with the command (da rivedere se è corretto che non l avevo segnato)
+
+
+```
+python convert_to_action_former_json.py
+```
+
+After that I've created the multi_step_localization/actionformer/configs/ego4d_pe.yaml that is the correspective of the others, but using the dimension of the percetion encoder's feature and with the folder of the features and of the annotations and I've used it for the training of the ActionFormer transformer (40 epoch)
+
+```
+python .\multi_step_localization\train.py .\multi_step_localization\actionformer\configs\ego4d_pe.yaml --output reproduce --backbone perception_encoder
+```
+
+(Inserire grafico training )
+
+After that I've Evaluated the Model with the command: 
+
+```
+python .\multi_step_localization\eval.py .\multi_step_localization\actionformer\configs\ego4d_pe.yaml reproduce --backbone perception_encoder
+```
+that achieved :
+
+| tIoU | mAP (%) | Recall@1x (%) | Recall@5x (%) |
+| :--- | :--- | :--- | :--- |
+| **0.10** | 46.31 | 62.03 | 88.59 |
+| **0.20** | 44.93 | 58.91 | 86.56 |
+| **0.30** | 42.67 | 54.22 | 82.66 |
+| **0.40** | 39.75 | 49.58 | 78.12 |
+| **0.50** | 35.59 | 42.60 | 72.03 |
+Average mAP 41.85 
+
+and create the output_actionFormer/ego4d/perception_encoder_recordings_reproduce/eval_results.pkl  that is used  in the multi_step_localization/parse_results.py that I've written
+
+```
+ python .\multi_step_localization\step_localization.py
+```
+(i parametri sono stati messi per default vanno poi inseriti nel comando)
+
 ## Acknowledgements
 
 This project builds on many repositories from the CaptainCook4D release. Please refer to the original codebases for more details.
