@@ -8,7 +8,7 @@ from constants import Constants as const
 
 def train_sub_step_test_step_er(config):
     train_loader, val_loader, test_loader = train_sub_step_test_step_dataset_base(config)
-    train_model_base(train_loader, val_loader, config)
+    train_model_base(train_loader, val_loader, config, test_loader=test_loader)
 
 
 def train_step_test_step_er(config):
@@ -26,8 +26,9 @@ def main():
     if conf.enable_wandb:
         init_logger_and_wandb(conf)
 
-    train_step_test_step_er(conf)
-
+    train_sub_step_test_step_er(conf)
+    #train_step_test_step_er(conf)
+    
     if conf.enable_wandb:
         wandb.finish()
 

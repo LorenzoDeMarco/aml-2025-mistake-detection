@@ -17,8 +17,9 @@ class Config(object):
         # Use this for 1 sec video features
         self.segment_features_directory = "data/"
 
-        self.ckpt_directory = "/data/rohith/captain_cook/checkpoints/"
-        self.split = "recordings"
+        #self.ckpt_directory = "/data/rohith/captain_cook/checkpoints/"
+        self.ckpt_directory = "./checkpoints"
+        self.split = const.RECORDINGS_SPLIT
         self.batch_size = 1
         self.test_batch_size = 1
         self.num_epochs = 10
@@ -30,7 +31,8 @@ class Config(object):
         self.seed = 1000
         self.device = "cuda"
 
-        self.variant = const.TRANSFORMER_VARIANT
+        #self.variant = const.TRANSFORMER_VARIANT
+        self.variant = const.MLP_VARIANT
         self.model_name = None
         self.task_name = const.ERROR_RECOGNITION
         self.error_category = None
@@ -62,9 +64,9 @@ class Config(object):
         parser.add_argument("--seed", type=int, default=42, help="random seed (default: 1000)")
 
         parser.add_argument("--backbone", type=str, default=const.OMNIVORE, help="backbone model")
-        parser.add_argument("--ckpt_directory", type=str, default="/data/rohith/captain_cook/checkpoints", help="checkpoint directory")
+        parser.add_argument("--ckpt_directory", type=str, default="./checkpoints", help="checkpoint directory")
         parser.add_argument("--split", type=str, default=const.RECORDINGS_SPLIT, help="split")
-        parser.add_argument("--variant", type=str, default=const.TRANSFORMER_VARIANT, help="variant")
+        parser.add_argument("--variant", type=str, default=const.LSTM_VARIANT, help="variant")
         parser.add_argument("--model_name", type=str, default=None, help="model name")
         parser.add_argument("--task_name", type=str, default=const.ERROR_RECOGNITION, help="task name")
         parser.add_argument("--error_category", type=str, help="error category")

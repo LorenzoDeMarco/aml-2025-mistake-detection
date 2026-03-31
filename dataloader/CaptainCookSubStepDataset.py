@@ -19,7 +19,7 @@ class CaptainCookSubStepDataset(Dataset):
             self._split = "recordings"
 
         assert self._phase in ["train", "val", "test"], f"Invalid phase: {self._phase}"
-        self._features_directory = self._config.video_features_directory
+        self._features_directory = self._config.segment_features_directory
 
         self._recording_ids_file = f"{self._split}_data_split_combined.json"
 
@@ -58,10 +58,15 @@ class CaptainCookSubStepDataset(Dataset):
         recording_id = self._sub_step_dict[idx][0]
         start_time, end_time = self._sub_step_dict[idx][1]
         has_errors = self._sub_step_dict[idx][2]
-
-        features_path = os.path.join(self._features_directory, self._backbone, f'{recording_id}_360p.mp4_1s_1s.npz')
-        features_data = np.load(features_path)
-        recording_features = features_data['arr_0']
+        if self._backbone in ["omnivore", "slowfast", "perception_encoder"]:
+            features_path = os.path.join(self._features_directory,"features", self._backbone, f'{recording_id}_360p.mp4_1s_1s.npz')
+            with np.load(features_path) as f:
+                recording_features = f["arr_0"] if "arr_0" in f.files else f[f.files[0]]
+        elif self._backbone == "egovlp":
+            features_path = os.path.join(self._features_directory, "features", self._backbone, f'{recording_id}.npy')
+            recording_features = np.load(features_path)  # return ndarray，no need to close(),close() get error
+        else:
+            raise ValueError(f"Backbone {self._backbone} not supported for sub-step dataset.") 
 
         sub_step_features = recording_features[start_time:end_time]
         sub_step_features = torch.from_numpy(sub_step_features).float()
@@ -70,9 +75,6 @@ class CaptainCookSubStepDataset(Dataset):
             sub_step_labels = torch.ones(1, 1)
         else:
             sub_step_labels = torch.zeros(1, 1)
-
-        features_data.close()
-
         return sub_step_features, sub_step_labels
 
 
