@@ -38,6 +38,9 @@ def load_backbone():
     if os.name == 'nt':
         pathlib.PosixPath = temp_posix
     model.load_state_dict(checkpoint['state_dict'], strict=False)
+
+    if hasattr(model, 'video_projection'):
+        model.video_projection = torch.nn.Identity()
     
     model.eval()
     model.to(device)
