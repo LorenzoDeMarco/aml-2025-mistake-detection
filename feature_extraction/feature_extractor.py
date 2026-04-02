@@ -38,9 +38,6 @@ def load_backbone():
     if os.name == 'nt':
         pathlib.PosixPath = temp_posix
     model.load_state_dict(checkpoint['state_dict'], strict=False)
-
-    if hasattr(model, 'video_projection'):
-        model.video_projection = torch.nn.Identity()
     
     model.eval()
     model.to(device)
@@ -93,11 +90,10 @@ def process_video(video_path, model, target_hz=1.875, window_size=16):
             
             input_tensor = preprocess_frames(frames)
             
-            if hasattr(model, 'compute_video'):
-                features = model.compute_video(input_tensor)
-            else:
-                output = model(video=input_tensor)
-                features = output['video_embeds'] if isinstance(output, dict) else output
+            features = model.video_model(input_tensor)
+            
+            if isinstance(features, tuple):
+                features = features[0]
                 
             features = features.squeeze().cpu().numpy()
             aggregated_features.append(features)
