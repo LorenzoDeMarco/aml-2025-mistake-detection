@@ -175,3 +175,6 @@ output_actionFormer/
 *.pth.tar
 *.npy
 *.npz
+
+captaincook_actionformer_annotations/
+ActionFormer_eval/
