@@ -1,3 +1,6 @@
 [submodule "annotations"]
 	path = annotations
 	url = https://github.com/CaptainCook4D/annotations
+[submodule "multi_step_localization"]
+	path = multi_step_localization
+	url = https://github.com/LorenzoDeMarco/multi_step_localization.git
