@@ -140,6 +140,24 @@ This table breaks down the LSTM's ability to classify specific error categories 
 | **Recordings** | Timing Error | 0.4741 | 0.2114 | 0.7363 | 0.3284 | 0.6004 |
 | **Recordings** | Temperature Error | 0.4715 | 0.1935 | 0.7595 | 0.3085 | 0.6069 |
 
+## Feature extraction
+This module handles the transformation of raw videos into dense vector representations (features) using **EgoVLP**, an architecture optimized for first-person (egocentric) video analysis. The extraction process has been engineered around three core principles to maximize the effectiveness of the downstream mistake detection model.
+
+### Processing method: temporal window and spatial normalization
+To capture the temporal dynamics of actions, videos are not processed frame-by-frame, but rather through a **16-frame temporal sliding window**.
+* **Rationale:** 16 frames represent the ideal temporal receptive field for the EgoVLP TimeSformer backbone. This allows the model to observe an atomic action as it unfolds, providing sufficient context to distinguish complex movements without saturating memory constraints.
+* **Transformations:** each frame is resized, cropped to `224x224` pixels, and normalized. This step aligns the input with EgoVLP's original training distributions, ensuring that the patches extracted by the transformer maintain the correct spatial scale.
+
+### Invariant temporal sampling: 1.875 Hz
+Raw videos often feature heterogeneous framerates (FPS). Instead of extracting a fixed number of features per video or sampling every *n* frames, the module enforces a fixed target extraction frequency of **1.875 Hz**.
+* **Mechanism:** the system dynamically calculates the stride (the step size of the sliding window) based on the video's native FPS (`stride = round(fps / 1.875)`).
+* **Rationale:** this approach guarantees **temporal invariance**. Regardless of the recording hardware, the downstream model will always receive ~1.88 representations for every second of video. This consistency is crucial for sequential models, as it allows them to learn the actual real-world duration of recipe steps without being misled by variations in the original framerate.
+
+### Pure representation: projection head removal (768-dim)
+During extraction, EgoVLP's final projection head is deliberately bypassed, fetching features directly from the transformer backbone's last layer. The generated output is a dense **768-dimensional** vector per step.
+* **Rationale:** during the pre-training phase, EgoVLP's projection head is used to map videos and texts into a shared latent space (optimizing a contrastive loss). This process inherently "compresses" information, discarding fine visual details in favor of a high-level semantic representation aligned with text.
+* **Advantage for mistake detection:** by bypassing the head, we retrieve the raw embeddings. These 768-dimensional vectors are significantly richer in spatiotemporal micro-details (e.g., exact hand positions, small objects, subtle movement directions). These details are essential for identifying operational errors (mistakes) that are difficult to describe purely through language, ensuring maximum expressive capacity for the downstream task.
+
 ## Acknowledgements
 
 This project builds on many repositories from the CaptainCook4D release. Please refer to the original codebases for more details.
