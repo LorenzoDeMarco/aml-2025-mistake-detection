@@ -5,3 +5,6 @@
 	path = EgoVLP
 	url = https://github.com/showlab/EgoVLP.git
 	ignore = untracked
+[submodule "multi_step_localization"]
+	path = multi_step_localization
+	url = https://github.com/EmanuelePietroCometti/multi_step_localization.git
