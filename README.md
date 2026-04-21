@@ -117,10 +117,10 @@ achieving best result with the hyperparams:
 | Hyperparams | Value |
 | :--- | :--- |
 | **Input Dimension** | 1024 |
-| **Model Dimension** | 128 |
+| **Model Dimension** | 256 |
 | **Number of Heads** | 4 |
-| **Number of Layers** | 2 |
-| **Dropout** | 0.2 |
+| **Number of Layers** | 1 |
+| **Dropout** | 0.1 |
 | **Learning Rate** | 2e-4 |
 | **Epochs** | 10 |
 | **Optimizer** | AdamW / Adam |
@@ -130,12 +130,12 @@ with the resault of:
 
 | Metrics | Value |
 | :--- | :--- |
-| **Accuracy** | 0.6342 |
-| **Precision** | 0.6537 |
-| **Recall** | 0.7706 |
-| **F1-Score** | 0.7074 |
-| **AUC (ROC)** | 0.6407 |
-| **PR-AUC** | 0.6662 |
+| **Accuracy** | 0.6473 |
+| **Precision** | 0.6468 |
+| **Recall** | 0.8486 |
+| **F1-Score** | 0.7341 |
+| **AUC (ROC)** | 0.635 |
+| **PR-AUC** | 0.6483 |
 
 
 
