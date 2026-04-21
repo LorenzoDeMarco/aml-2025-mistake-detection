@@ -294,11 +294,14 @@ def parse_args():
 def main():
     args = parse_args()
 
-    # Controllo disponibilità wandb
     if args.use_wandb and not WANDB_AVAILABLE:
         raise ImportError("wandb non è installato. Esegui: pip install wandb")
-
-    features_dir = Path("output_KFold__step_embedding")
+    #KFold
+    #features_dir = Path("output_KFold__step_embedding")
+    #KFold 1s
+    features_dir = Path("output_KFold_1s_step_embedding")
+    #Normal
+    #features_dir = Path("output_step_embeddings")
     label_csv    = Path("annotations/annotation_csv/step_annotations.csv")
 
     label_dict = CSV_read(label_csv)
@@ -309,16 +312,17 @@ def main():
 
     hyperparameters = {
         'input_dim':    1024,
-        'model_dim':    256,
-        'num_heads':    8,
+        'model_dim':    128,
+        'num_heads':    4,
         'num_layers':   2,
         'dropout':      0.2,
-        'lr':           5e-4,
-        'epochs':       20,
-        'batch_size':   4,
+        'lr':           2e-4,
+        'epochs':       10,
         'optimizer':    args.optimizer,
         'weight_decay': args.weight_decay,
     }
+
+
 
     print(f"Ottimizzatore: {args.optimizer.upper()}"
           + (f"  weight_decay={args.weight_decay}" if args.optimizer == "adamw" else ""))

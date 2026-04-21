@@ -1,0 +1,820 @@
+{
+  "folds": [
+    {
+      "fold": 1,
+      "recipe": "1",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 0.5,
+        "f1": 0.5,
+        "accuracy": 0.3333333333333333,
+        "tp": 1,
+        "tn": 0,
+        "fp": 1,
+        "fn": 1,
+        "auc": 0.5,
+        "pr_auc": 0.8333333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "1_20",
+          "y_true": 0,
+          "y_prob": 0.7094171643257141,
+          "y_pred": 1
+        },
+        {
+          "video_id": "1_37",
+          "y_true": 1,
+          "y_prob": 0.7351955771446228,
+          "y_pred": 1
+        },
+        {
+          "video_id": "1_42",
+          "y_true": 1,
+          "y_prob": 0.46374017000198364,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 2,
+      "recipe": "10",
+      "metrics": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "accuracy": 1.0,
+        "tp": 1,
+        "tn": 0,
+        "fp": 0,
+        "fn": 0,
+        "auc": NaN,
+        "pr_auc": NaN
+      },
+      "predictions": [
+        {
+          "video_id": "10_46",
+          "y_true": 1,
+          "y_prob": 0.7513647675514221,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 3,
+      "recipe": "12",
+      "metrics": {
+        "precision": 0.3333333333333333,
+        "recall": 1.0,
+        "f1": 0.5,
+        "accuracy": 0.3333333333333333,
+        "tp": 1,
+        "tn": 0,
+        "fp": 2,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "12_15",
+          "y_true": 0,
+          "y_prob": 0.9608749151229858,
+          "y_pred": 1
+        },
+        {
+          "video_id": "12_16",
+          "y_true": 0,
+          "y_prob": 0.9679294228553772,
+          "y_pred": 1
+        },
+        {
+          "video_id": "12_43",
+          "y_true": 1,
+          "y_prob": 0.9721670746803284,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 4,
+      "recipe": "13",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6666666666666666,
+        "accuracy": 0.5,
+        "tp": 1,
+        "tn": 0,
+        "fp": 1,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "13_18",
+          "y_true": 0,
+          "y_prob": 0.7896057963371277,
+          "y_pred": 1
+        },
+        {
+          "video_id": "13_38",
+          "y_true": 1,
+          "y_prob": 0.8781352043151855,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 5,
+      "recipe": "15",
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy": 0.3333333333333333,
+        "tp": 0,
+        "tn": 1,
+        "fp": 0,
+        "fn": 2,
+        "auc": 0.5,
+        "pr_auc": 0.8333333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "15_37",
+          "y_true": 1,
+          "y_prob": 0.3580203652381897,
+          "y_pred": 0
+        },
+        {
+          "video_id": "15_39",
+          "y_true": 1,
+          "y_prob": 0.10970128327608109,
+          "y_pred": 0
+        },
+        {
+          "video_id": "15_8",
+          "y_true": 0,
+          "y_prob": 0.2323339879512787,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 6,
+      "recipe": "16",
+      "metrics": {
+        "precision": 1.0,
+        "recall": 0.5,
+        "f1": 0.6666666666666666,
+        "accuracy": 0.6666666666666666,
+        "tp": 1,
+        "tn": 1,
+        "fp": 0,
+        "fn": 1,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "16_17",
+          "y_true": 0,
+          "y_prob": 0.27849167585372925,
+          "y_pred": 0
+        },
+        {
+          "video_id": "16_39",
+          "y_true": 1,
+          "y_prob": 0.8265847563743591,
+          "y_pred": 1
+        },
+        {
+          "video_id": "16_40",
+          "y_true": 1,
+          "y_prob": 0.31653887033462524,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 7,
+      "recipe": "17",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6666666666666666,
+        "accuracy": 0.6666666666666666,
+        "tp": 1,
+        "tn": 1,
+        "fp": 1,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "17_16",
+          "y_true": 0,
+          "y_prob": 0.37002861499786377,
+          "y_pred": 0
+        },
+        {
+          "video_id": "17_19",
+          "y_true": 0,
+          "y_prob": 0.8429781794548035,
+          "y_pred": 1
+        },
+        {
+          "video_id": "17_40",
+          "y_true": 1,
+          "y_prob": 0.8849092721939087,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 8,
+      "recipe": "18",
+      "metrics": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "accuracy": 1.0,
+        "tp": 2,
+        "tn": 0,
+        "fp": 0,
+        "fn": 0,
+        "auc": NaN,
+        "pr_auc": NaN
+      },
+      "predictions": [
+        {
+          "video_id": "18_33",
+          "y_true": 1,
+          "y_prob": 0.8371394872665405,
+          "y_pred": 1
+        },
+        {
+          "video_id": "18_41",
+          "y_true": 1,
+          "y_prob": 0.7688339352607727,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 9,
+      "recipe": "2",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 0.5,
+        "f1": 0.5,
+        "accuracy": 0.3333333333333333,
+        "tp": 1,
+        "tn": 0,
+        "fp": 1,
+        "fn": 1,
+        "auc": 0.5,
+        "pr_auc": 0.8333333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "2_17",
+          "y_true": 0,
+          "y_prob": 0.5921207070350647,
+          "y_pred": 1
+        },
+        {
+          "video_id": "2_41",
+          "y_true": 1,
+          "y_prob": 0.37626028060913086,
+          "y_pred": 0
+        },
+        {
+          "video_id": "2_42",
+          "y_true": 1,
+          "y_prob": 0.8477767109870911,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 10,
+      "recipe": "20",
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy": 0.5,
+        "tp": 0,
+        "tn": 1,
+        "fp": 0,
+        "fn": 1,
+        "auc": 0.0,
+        "pr_auc": 0.5
+      },
+      "predictions": [
+        {
+          "video_id": "20_17",
+          "y_true": 0,
+          "y_prob": 0.12003787606954575,
+          "y_pred": 0
+        },
+        {
+          "video_id": "20_39",
+          "y_true": 1,
+          "y_prob": 0.11028333008289337,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 11,
+      "recipe": "21",
+      "metrics": {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "f1": 0.8,
+        "accuracy": 0.6666666666666666,
+        "tp": 2,
+        "tn": 0,
+        "fp": 1,
+        "fn": 0,
+        "auc": 0.5,
+        "pr_auc": 0.8333333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "21_19",
+          "y_true": 0,
+          "y_prob": 0.7933256030082703,
+          "y_pred": 1
+        },
+        {
+          "video_id": "21_44",
+          "y_true": 1,
+          "y_prob": 0.8139393329620361,
+          "y_pred": 1
+        },
+        {
+          "video_id": "21_46",
+          "y_true": 1,
+          "y_prob": 0.7201175689697266,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 12,
+      "recipe": "22",
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy": 0.0,
+        "tp": 0,
+        "tn": 0,
+        "fp": 1,
+        "fn": 2,
+        "auc": 0.0,
+        "pr_auc": 0.5833333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "22_13",
+          "y_true": 0,
+          "y_prob": 0.6516444683074951,
+          "y_pred": 1
+        },
+        {
+          "video_id": "22_37",
+          "y_true": 1,
+          "y_prob": 0.22805139422416687,
+          "y_pred": 0
+        },
+        {
+          "video_id": "22_38",
+          "y_true": 1,
+          "y_prob": 0.4371325969696045,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 13,
+      "recipe": "23",
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy": 0.0,
+        "tp": 0,
+        "tn": 0,
+        "fp": 2,
+        "fn": 1,
+        "auc": 0.0,
+        "pr_auc": 0.3333333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "23_17",
+          "y_true": 0,
+          "y_prob": 0.5227154493331909,
+          "y_pred": 1
+        },
+        {
+          "video_id": "23_18",
+          "y_true": 0,
+          "y_prob": 0.5002729892730713,
+          "y_pred": 1
+        },
+        {
+          "video_id": "23_38",
+          "y_true": 1,
+          "y_prob": 0.372641384601593,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 14,
+      "recipe": "25",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6666666666666666,
+        "accuracy": 0.5,
+        "tp": 1,
+        "tn": 0,
+        "fp": 1,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "25_40",
+          "y_true": 1,
+          "y_prob": 0.6172394156455994,
+          "y_pred": 1
+        },
+        {
+          "video_id": "25_6",
+          "y_true": 0,
+          "y_prob": 0.5100065469741821,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 15,
+      "recipe": "26",
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy": 0.3333333333333333,
+        "tp": 0,
+        "tn": 1,
+        "fp": 0,
+        "fn": 2,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "26_19",
+          "y_true": 0,
+          "y_prob": 0.34052199125289917,
+          "y_pred": 0
+        },
+        {
+          "video_id": "26_39",
+          "y_true": 1,
+          "y_prob": 0.42060381174087524,
+          "y_pred": 0
+        },
+        {
+          "video_id": "26_42",
+          "y_true": 1,
+          "y_prob": 0.41256386041641235,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 16,
+      "recipe": "27",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6666666666666666,
+        "accuracy": 0.5,
+        "tp": 1,
+        "tn": 0,
+        "fp": 1,
+        "fn": 0,
+        "auc": 0.0,
+        "pr_auc": 0.5
+      },
+      "predictions": [
+        {
+          "video_id": "27_15",
+          "y_true": 0,
+          "y_prob": 0.8494724035263062,
+          "y_pred": 1
+        },
+        {
+          "video_id": "27_37",
+          "y_true": 1,
+          "y_prob": 0.8455162048339844,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 17,
+      "recipe": "28",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 0.5,
+        "f1": 0.5,
+        "accuracy": 0.3333333333333333,
+        "tp": 1,
+        "tn": 0,
+        "fp": 1,
+        "fn": 1,
+        "auc": 0.5,
+        "pr_auc": 0.8333333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "28_16",
+          "y_true": 0,
+          "y_prob": 0.5222622752189636,
+          "y_pred": 1
+        },
+        {
+          "video_id": "28_42",
+          "y_true": 1,
+          "y_prob": 0.49845725297927856,
+          "y_pred": 0
+        },
+        {
+          "video_id": "28_44",
+          "y_true": 1,
+          "y_prob": 0.6952755451202393,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 18,
+      "recipe": "29",
+      "metrics": {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "f1": 0.8,
+        "accuracy": 0.6666666666666666,
+        "tp": 2,
+        "tn": 0,
+        "fp": 1,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "29_18",
+          "y_true": 0,
+          "y_prob": 0.6603812575340271,
+          "y_pred": 1
+        },
+        {
+          "video_id": "29_37",
+          "y_true": 1,
+          "y_prob": 0.7458586692810059,
+          "y_pred": 1
+        },
+        {
+          "video_id": "29_45",
+          "y_true": 1,
+          "y_prob": 0.6670231819152832,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 19,
+      "recipe": "3",
+      "metrics": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "accuracy": 1.0,
+        "tp": 1,
+        "tn": 1,
+        "fp": 0,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "3_13",
+          "y_true": 0,
+          "y_prob": 0.38562479615211487,
+          "y_pred": 0
+        },
+        {
+          "video_id": "3_36",
+          "y_true": 1,
+          "y_prob": 0.542259931564331,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 20,
+      "recipe": "4",
+      "metrics": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "accuracy": 1.0,
+        "tp": 1,
+        "tn": 2,
+        "fp": 0,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "4_20",
+          "y_true": 0,
+          "y_prob": 0.3629589378833771,
+          "y_pred": 0
+        },
+        {
+          "video_id": "4_22",
+          "y_true": 0,
+          "y_prob": 0.27312618494033813,
+          "y_pred": 0
+        },
+        {
+          "video_id": "4_40",
+          "y_true": 1,
+          "y_prob": 0.6498003602027893,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 21,
+      "recipe": "5",
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy": 0.5,
+        "tp": 0,
+        "tn": 1,
+        "fp": 0,
+        "fn": 1,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "5_18",
+          "y_true": 0,
+          "y_prob": 0.4146498143672943,
+          "y_pred": 0
+        },
+        {
+          "video_id": "5_37",
+          "y_true": 1,
+          "y_prob": 0.4903046190738678,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 22,
+      "recipe": "7",
+      "metrics": {
+        "precision": 0.6666666666666666,
+        "recall": 1.0,
+        "f1": 0.8,
+        "accuracy": 0.6666666666666666,
+        "tp": 2,
+        "tn": 0,
+        "fp": 1,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "7_44",
+          "y_true": 1,
+          "y_prob": 0.7440822720527649,
+          "y_pred": 1
+        },
+        {
+          "video_id": "7_48",
+          "y_true": 1,
+          "y_prob": 0.8115913271903992,
+          "y_pred": 1
+        },
+        {
+          "video_id": "7_5",
+          "y_true": 0,
+          "y_prob": 0.7389584183692932,
+          "y_pred": 1
+        }
+      ]
+    },
+    {
+      "fold": 23,
+      "recipe": "8",
+      "metrics": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "accuracy": 0.0,
+        "tp": 0,
+        "tn": 0,
+        "fp": 1,
+        "fn": 2,
+        "auc": 0.0,
+        "pr_auc": 0.5833333333333333
+      },
+      "predictions": [
+        {
+          "video_id": "8_19",
+          "y_true": 0,
+          "y_prob": 0.5735593438148499,
+          "y_pred": 1
+        },
+        {
+          "video_id": "8_40",
+          "y_true": 1,
+          "y_prob": 0.4947502911090851,
+          "y_pred": 0
+        },
+        {
+          "video_id": "8_44",
+          "y_true": 1,
+          "y_prob": 0.36812540888786316,
+          "y_pred": 0
+        }
+      ]
+    },
+    {
+      "fold": 24,
+      "recipe": "9",
+      "metrics": {
+        "precision": 0.5,
+        "recall": 1.0,
+        "f1": 0.6666666666666666,
+        "accuracy": 0.5,
+        "tp": 1,
+        "tn": 0,
+        "fp": 1,
+        "fn": 0,
+        "auc": 1.0,
+        "pr_auc": 1.0
+      },
+      "predictions": [
+        {
+          "video_id": "9_19",
+          "y_true": 0,
+          "y_prob": 0.6806808710098267,
+          "y_pred": 1
+        },
+        {
+          "video_id": "9_47",
+          "y_true": 1,
+          "y_prob": 0.7702173590660095,
+          "y_pred": 1
+        }
+      ]
+    }
+  ],
+  "overall_metrics": {
+    "precision": 0.5526315789473685,
+    "recall": 0.5833333333333334,
+    "f1": 0.5675675675675677,
+    "accuracy": 0.4838709677419355,
+    "tp": 21,
+    "tn": 9,
+    "fp": 17,
+    "fn": 15,
+    "auc": 0.5512820512820512,
+    "pr_auc": 0.631677391835462
+  }
+}
