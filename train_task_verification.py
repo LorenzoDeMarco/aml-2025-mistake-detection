@@ -58,16 +58,18 @@ def train_leave_one_out(X, y, groups, mask, input_dim, num_epochs=15):
     
     indices = np.arange(len(y))
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     # Iterate over each fold. In each iteration, one specific recipe (group) is held out for testing.
     for fold, (train_idx, test_idx) in enumerate(logo.split(indices, y.numpy(), groups=groups)):
         print(f"--- Fold {fold + 1}/{len(groups)} (Test Recipe: {groups[test_idx[0]]}) ---")
         
         # Split data and masks into Train and Test subsets for the current fold
-        X_train, y_train, mask_train = X[train_idx], y[train_idx], mask[train_idx]
-        X_test, y_test, mask_test = X[test_idx], y[test_idx], mask[test_idx]
+        X_train, y_train, mask_train = X[train_idx].to(device), y[train_idx].to(device), mask[train_idx].to(device)
+        X_test, y_test, mask_test = X[test_idx].to(device), y[test_idx].to(device), mask[test_idx].to(device)
         
         # Initialize model, loss function (Binary Cross Entropy with Logits), and optimizer
-        model = TaskVerificationTransformer(input_dim=input_dim)
+        model = TaskVerificationTransformer(input_dim=input_dim).to(device)
         criterion = nn.BCEWithLogitsLoss()
         optimizer = optim.Adam(model.parameters(), lr=1e-4)
         
