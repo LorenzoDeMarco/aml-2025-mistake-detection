@@ -243,6 +243,34 @@ python extract_predictions.py \
     --threshold 0.5
 ```
 
+## 3.2 Simple task-verification baselines via sequence modeling
+
+Following the localization of individual recipe steps, the focus shifts from localized mistake detection to a holistic **Task Verification** setting. The primary objective is to classify an entire recipe execution as either correct or incorrect based on its complete sequence of actions. This requires transitioning from step-level annotations to a single global binary label per video.
+
+### Architectural design: bidirectional transformer and masked pooling
+
+To evaluate the temporal sequence of a recipe, we engineered a custom classification head built upon a **Transformer Encoder** architecture (`TaskVerificationTransformer`).
+
+* **Bidirectional Context:** Unlike auto-regressive decoders, the `TransformerEncoderLayer` leverages bidirectional self-attention. This allows the model to assess the validity of a step by simultaneously attending to both past actions and future steps, effectively capturing long-term dependencies and procedural flow anomalies within the recipe execution.
+* **Masked Mean Pooling:** Real-world recipes inherently vary in length (number of steps). To process these heterogeneous sequences within batched tensors, the sequences are padded to a maximum uniform length. A crucial engineering choice was the implementation of a *Masked Mean Pooling* mechanism. Instead of a naive global average, the model utilizes an inverted boolean mask (`src_key_padding_mask`) to strictly exclude the artificial zero-padding tokens from the temporal aggregation. This ensures that the final pooled representation is an authentic summary of the actual executed steps before passing it to the final linear classification head.
+
+### Data aggregation and evaluation strategy (LOGO)
+
+The dataset's error annotations were programmatically aggregated to generate global labels. A recipe is labeled as an error (`1`) if *at least one* of its constituent steps contains a registered mistake, and as normal (`0`) otherwise.
+
+Given the limited number of samples and the inherent risk of environmental or subject bias in egocentric datasets, a standard random split was deemed insufficient. To address this, we implemented a rigorous **Leave-One-Group-Out (LOGO)** cross-validation strategy. During each fold, the model is trained on $k-1$ recipes and evaluated exclusively on the $k$-th hold-out recipe. This strictly prevents data leakage and ensures the reported Global Accuracy reflects the model's true capability to generalize to entirely unseen procedural executions.
+
+### Command line syntax & usage
+
+Below is the command to execute the task verification training pipeline. Ensure that the `.npz` file generated from Substep 1 is correctly linked.
+
+```bash
+python -m train_task_verification \
+    --npz_file data/embeddings/step_embeddings.npz \
+    --annotations annotations/annotation_json/error_annotations.json \
+    --epochs 15
+```
+
 
 ## Acknowledgements
 
