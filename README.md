@@ -271,6 +271,14 @@ python -m train_task_verification \
     --epochs 15
 ```
 
+### Evaluation Results
+
+The task verification model was evaluated using the strict Leave-One-Group-Out (LOGO) cross-validation strategy across all 384 recipe executions to ensure unbiased generalization metrics.
+
+
+| Split          | Strategy            | Global accuracy |
+| :------------- | :------------------ | :-------------- |
+| **Recordings** | Leave-One-Group-Out | **61.20%**      |
 
 ## Acknowledgements
 
