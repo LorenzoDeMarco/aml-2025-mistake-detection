@@ -5,15 +5,15 @@ import numpy as np
 from tqdm import tqdm
 import sys
 import pathlib
+sys.path.insert(0, "EgoVLP") 
 
+from model.model import FrozenInTime
 from transformers import AutoTokenizer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 def load_egovlp_text_model():
     """Loads the EgoVLP architecture and the associated tokenizer."""
-    sys.path.append("EgoVLP") 
-    from model.model import FrozenInTime
     
     config_path = os.path.join("EgoVLP", "configs", "pt", "egoclip.json")
     with open(config_path, "r") as f:
