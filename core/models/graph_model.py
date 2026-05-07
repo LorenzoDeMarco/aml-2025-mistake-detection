@@ -12,12 +12,12 @@ class GraphClassifier(nn.Module):
         self.gnn_layers = nn.ModuleList([
             nn.Linear(text_dim, text_dim) for _ in range(num_layers)
         ])
-        
-        self.classifier = nn.Sequential([
-            nn.Linear(text_dim, text_dim),
+     
+        self.classifier = nn.Sequential(
+            nn.Linear(text_dim, hidden_dim),
             nn.ReLU(),
             nn.Linear(hidden_dim, 1)
-        ])
+        )
         
     def forward(self, visual_feats, text_feats, adj_matrix):
         """
