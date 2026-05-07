@@ -41,8 +41,8 @@ def extract_text_features(model, tokenizer, texts):
     
     # EgoVLP expects a dictionary with 'input_ids' and 'attention_mask'
     text_data = {
-        'text': inputs['input_ids'].to(device),
-        'mask': inputs['attention_mask'].to(device)
+        'input_ids': inputs['input_ids'].to(device),
+        'attention_mask': inputs['attention_mask'].to(device)
     }
     
     with torch.no_grad():
