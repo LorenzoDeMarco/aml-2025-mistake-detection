@@ -6,6 +6,8 @@ import torch
 from torch.utils.data import Dataset
 from torch.nn import functional as F
 
+from dataloader.feature_io import find_segment_npz_in_directory, load_segment_features_from_npz
+
 from .datasets import register_dataset
 from .data_utils import truncate_feats
 
@@ -149,28 +151,22 @@ class ErrorDataset(Dataset):
 		# auto batching will be disabled in the subsequent dataloader
 		# instead the model will need to decide how to batch / preporcess the data
 		video_item = self.data_list[idx]
-		# load features
-		filename = os.path.join(self.feat_folder,
-		                        self.file_prefix + video_item['id'] +"_360p.mp4_1s_1s"+ self.file_ext)
-		with np.load(filename) as data:
-			#feats = data['feats'].astype(np.float32)
-			#feats = data["arr_0"] if "arr_0" in data.files else data[data.files[0]]
-			if "feats" in data.files:
-				feats = data["feats"]
-			elif "arr_0" in data.files:
-				feats = data["arr_0"]
-			else:
-				feats = data[data.files[0]]
-  
-		feats = np.asarray(feats, dtype=np.float32)
-		
-  		# deal with downsampling (= increased feat stride)
+		# load features (canonical path + glob fallback for alternate stems, e.g. PE extractor)
+		filename = find_segment_npz_in_directory(
+			self.feat_folder,
+			video_item["id"],
+			self.file_prefix or "",
+			self.file_ext or ".npz",
+		)
+		feats = load_segment_features_from_npz(filename)
+
+		# deal with downsampling (= increased feat stride)
 		feats = feats[::self.downsample_rate, :]
 		feat_stride = self.feat_stride * self.downsample_rate
 		feat_offset = 0.5 * self.num_frames / feat_stride
 		# T x C -> C x T
 		feats = torch.from_numpy(np.ascontiguousarray(feats.transpose()))
-  
+
 		if video_item['segments'] is not None:
 			segments = torch.from_numpy(
 				video_item['segments'] * video_item['fps'] / feat_stride - feat_offset

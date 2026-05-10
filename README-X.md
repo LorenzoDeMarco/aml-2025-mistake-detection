@@ -59,15 +59,15 @@ python -m core.evaluate  --variant LSTM --backbone omnivore  --modality video --
 ## 3. Extend the baselines to a new features extraction backbone 
 ### Extract features on PerceptionEncoder backbone：
 ```bash
-python core/extractor/PerceptionEncoder_feature_extractor.py --backbone pe_core --pe_core_model_id hf-hub:timm/PE-Core-B-16   --video_dir  data/video   --output_dir  data/features   --pe_core_num_frames 4   --segment_seconds 1   --num_workers 1
+python core/extractor/PerceptionEncoder_feature_extractor.py 
 ```
 ### Generate checkpoint:
 ```bash
-python train_er.py --backbone perception_encoder --variant MLP  --split step 
+python train_er.py --backbone perception_encoder --variant MLP  --split recordings 
 ```
 ### Evaluation:
 ```bash
-python -m core.evaluate --variant MLP --backbone perception_encoder --modality video --ckpt data/checkpoints/pe_core/MLP/error_recognition_recordings_perception_encoder_MLP_video_epoch_2.pt  --split step --threshold 0.6
+python -m core.evaluate --variant MLP --backbone perception_encoder --modality video --ckpt data/checkpoints/perception_encoder/MLP/error_recognition_recordings_perception_encoder_MLP_video_epoch_2.pt  --split recordings --threshold 0.4
 ```
 ## Outputs
 \results\error_recognition\combined_results\step_True_substep_True_threshold_xxx.csv
@@ -79,7 +79,7 @@ python -m core.evaluate --variant MLP --backbone perception_encoder --modality v
 
 ## Repository Structure
 - `substep1_1_convert_to_action_former_json.py`: Convert CaptainCook annotations to ActionFormer JSON
-- `substep1_2_train_checkpoint.py`: Train localization model on Omnivore feature
+- `substep1_2_train_checkpoint.py`: Train localization model (feature folder set in YAML; use `configs/error_perception_encoder.yaml` for PE `.npz`)
 - `substep1_3_step_level_boundaries.py`: Produce serialization file (outputs `eval_results.pkl`),which is model-predicted boundaries of step segments (start/end)
 - `substep1_4_step_localization.py`: Generate step-level embedding features with the (start, end) boundaries of the step on PerceptionEncoder feature (outputs`.npz`)
 - `substep2_task_verification.py`: Use step embeddings features to classify a recipe execution is correct or incorrect
@@ -89,15 +89,16 @@ python -m core.evaluate --variant MLP --backbone perception_encoder --modality v
 - `libs/`: Modeling, datasets, utilities
 - `captaincook/`: the data from github project: aml-2025-mistake-detection 
 - `data/substep1_1_actionformer_annotations/`: the output of substep1_1
-- `data/omnivore/checkpoints/`: the output of substep1_2 and substep1_3
+- `data/perception_encoder/actionformer_checkpoints/`: default output of substep1_2 / substep1_3 when using `error_perception_encoder.yaml`
+- `data/features/perception_encoder/`: 1 Hz segment `.npz` from `PerceptionEncoder_feature_extractor.py` (step localization input)
 - `data/pe_core/`:  the output of substep1_4 to substep4
 
 ## Data and code resource
 - `captaincook/`: is annotations/ from project: aml-2025-mistake-detection 
 https://github.com/sapeirone/aml-2025-mistake-detection
 
-- `configs/error_omnivore.yaml`: is error_omnivore.yaml from project:multi_step_localization
-https://github.com/CaptainCook4D/multi_step_localization.git and https://github.com/happyharrycn/actionformer_release
+- `configs/error_omnivore.yaml`: Omnivore features (`./data/omnivore/features`), from multi_step_localization / ActionFormer lineage
+- `configs/error_perception_encoder.yaml`: PerceptionEncoder 1s `.npz` under `./data/features/perception_encoder` (`input_dim: 1024` for default PE-Core-B-16)
 - `lib/`: is multi_step_localization/actionformer/libs from project:multi_step_localization
 - `lib/error.py`: Copied dataloader script error_dataset.py from project:multi_step_localization then modified
 
@@ -118,20 +119,26 @@ https://github.com/CaptainCook4D/multi_step_localization.git and https://github.
 python -m substep1_1_convert_to_action_former_json
 ```
 
-2) Train localization model:
+2) Extract segment features (once per video corpus):
 ```bash
-python substep1_2_train_checkpoint.py ./configs/error_omnivore.yaml
+python core/extractor/PerceptionEncoder_feature_extractor.py --video_dir ./data/video --output_dir ./data/features
+```
+Outputs `./data/features/perception_encoder/*.npz` (1 Hz segments; key `features`).
+
+3) Train localization model on those features:
+```bash
+python substep1_2_train_checkpoint.py ./configs/error_perception_encoder.yaml
 ```
 
-3) Inference and eval to get `eval_results.pkl`:
+4) Inference and save `eval_results.pkl` (pass the **run folder** that contains `epoch_*.pth.tar`, e.g. `error_perception_encoder_<timestamp>/` under `actionformer_checkpoints/`):
 ```bash
-python substep1_3_step_level_boundaries.py ./configs/error_omnivore.yaml  ./data/omnivore/checkpoints/  --saveonly
+python substep1_3_step_level_boundaries.py ./configs/error_perception_encoder.yaml ./data/perception_encoder/actionformer_checkpoints/error_perception_encoder_<timestamp>/ --saveonly
 ```
 
-4) Build step-level embeddings:
+5) Build step-level embeddings (same `.npz` directory as localization):
 ```bash
-python substep1_4_step_localization.py  --eval_pkl "./data/omnivore/checkpoints/eval_results.pkl" 
-  --features_dir "./data/pe_core/features"  --out_dir "./data/pe_core/substep1_out" --segment_sec 1.0 --score_thr 0.01 --topk 30
+python substep1_4_step_localization.py --eval_pkl "./data/perception_encoder/actionformer_checkpoints/error_perception_encoder_<timestamp>/eval_results.pkl"
+  --features_dir "./data/features/perception_encoder" --out_dir "./data/pe_core/substep1_out" --segment_sec 1.0 --score_thr 0.01 --topk 30
 ```
 
 ### Substep2: Video-Level Verification (Transformer)

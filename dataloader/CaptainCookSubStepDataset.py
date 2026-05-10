@@ -5,6 +5,9 @@ import os
 import numpy as np
 import torch
 from torch.utils.data import Dataset
+from constants import Constants as const
+
+from dataloader.feature_io import find_segment_feature_npz, load_segment_features_from_npz
 
 
 class CaptainCookSubStepDataset(Dataset):
@@ -58,11 +61,14 @@ class CaptainCookSubStepDataset(Dataset):
         recording_id = self._sub_step_dict[idx][0]
         start_time, end_time = self._sub_step_dict[idx][1]
         has_errors = self._sub_step_dict[idx][2]
-        if self._backbone in ["omnivore", "slowfast", "perception_encoder"]:
-            features_path = os.path.join(self._features_directory,"features", self._backbone, f'{recording_id}_360p.mp4_1s_1s.npz')
-            with np.load(features_path) as f:
-                recording_features = f["arr_0"] if "arr_0" in f.files else f[f.files[0]]
-        elif self._backbone == "egovlp":
+        if self._backbone in [const.OMNIVORE, const.SLOWFAST, const.PERCEPTION_ENCODER]:
+            features_path = find_segment_feature_npz(
+                self._features_directory,
+                self._backbone,
+                recording_id,
+            )
+            recording_features = load_segment_features_from_npz(features_path)
+        elif self._backbone == const.EGOVLP:
             features_path = os.path.join(self._features_directory, "features", self._backbone, f'{recording_id}.npy')
             recording_features = np.load(features_path)  # return ndarray，no need to close(),close() get error
         else:

@@ -11,6 +11,11 @@ matplotlib
 seaborn
 wandb
 torcheval
+pytorchvideo
+open_clip_torch
+timm
+decord
+Pillow
 
 pyrebase4
 yacs

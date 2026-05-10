@@ -1,89 +1,131 @@
 import argparse
-from dataclasses import dataclass
-from typing import Optional
-import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import List, Optional
+
 import torch
 from torch.utils.data import DataLoader
 
-from base import fetch_model, test_er_model,save_results,save_error_type_results
+from base import fetch_model, save_error_type_results, save_results, test_er_model
 from constants import Constants as const
 from dataloader.CaptainCookStepDataset import CaptainCookStepDataset, collate_fn
 
 
 @dataclass
-class Config(object):
-    backbone: str = "omnivore"
-    modality: str = "video"
-    phase: str = "train"
+class EvalConfig:
+    backbone: str = "perception_encoder"
+    modality: List[str] = field(default_factory=lambda: [const.VIDEO])
+    phase: str = const.TEST
     segment_length: int = 1
-    # Use this for 1 sec video features
     segment_features_directory: str = "data/"
-
-    ckpt_directory: str = "data/checkpoints/"
     split: str = const.RECORDINGS_SPLIT
-    batch_size: int = 1
     test_batch_size: int = 1
-    ckpt: Optional[str] = None
+    ckpt_path: Optional[str] = None
     seed: int = 1000
     device: str = "cuda"
-
     variant: str = const.LSTM_VARIANT
     task_name: str = const.ERROR_RECOGNITION
+    model_name: Optional[str] = None
 
+def eval_er(conf: EvalConfig, threshold: float):
+    device_torch = torch.device(conf.device if torch.cuda.is_available() else "cpu")
+    conf.device = str(device_torch)
 
-def eval_er(config, threshold):
-    model = fetch_model(config)
+    model = fetch_model(conf)
     criterion = torch.nn.BCEWithLogitsLoss()
-    ckpt_directory_path = os.path.join(config.ckpt_directory, config.backbone, config.variant)
-    # Load the model from the ckpt file
-    model.load_state_dict(torch.load(config.ckpt_directory))
+    ckpt = Path(conf.ckpt_path)
+    if not ckpt.is_file():
+        raise FileNotFoundError(f"Checkpoint not found: {ckpt}")
+    state = torch.load(conf.ckpt_path, map_location=device_torch)
+    model.load_state_dict(state)
+    model.to(device_torch)
     model.eval()
-    #setup1: open meta info for error type analysis
-    # Enable meta for per-error-type metrics
-    config.return_meta = True
-    test_dataset = CaptainCookStepDataset(config, const.TEST, config.split)
-    test_loader = DataLoader(test_dataset, batch_size=config.test_batch_size, collate_fn=collate_fn)
 
-    # Calculate the evaluation metrics
-    #test_er_model(model, test_loader, criterion, config.device, phase="test", step_normalization=True, sub_step_normalization=True, threshold=threshold)
+    conf.return_meta = True
+    test_dataset = CaptainCookStepDataset(conf, const.TEST, conf.split)
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=conf.test_batch_size,
+        collate_fn=collate_fn,
+    )
 
-
-    #setup1: modify to get error type metrics
     test_losses, sub_step_metrics, step_metrics, error_type_metrics = test_er_model(
         model,
         test_loader,
         criterion,
-        config.device,
+        conf.device,
         phase="test",
         step_normalization=True,
         sub_step_normalization=True,
         threshold=threshold,
         return_error_type_metrics=True,
     )
-    save_results(config, sub_step_metrics, step_metrics, step_normalization=True, sub_step_normalization=True, threshold=threshold)
-    save_error_type_results(config, error_type_metrics, step_normalization=True, sub_step_normalization=True, threshold=threshold)
-
-
+    save_results(
+        conf,
+        sub_step_metrics,
+        step_metrics,
+        step_normalization=True,
+        sub_step_normalization=True,
+        threshold=threshold,
+    )
+    save_error_type_results(
+        conf,
+        error_type_metrics,
+        step_normalization=True,
+        sub_step_normalization=True,
+        threshold=threshold,
+    )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--split", type=str, choices=[const.STEP_SPLIT, const.RECORDINGS_SPLIT], required=True)
-    parser.add_argument("--backbone", type=str, choices=[const.SLOWFAST, const.OMNIVORE, const.PERCEPTION_ENCODER], required=True)
-    parser.add_argument("--variant", type=str, choices=[const.MLP_VARIANT, const.TRANSFORMER_VARIANT,const.LSTM_VARIANT], required=True)
+    parser = argparse.ArgumentParser(description="Evaluate error recognition baseline")
+    parser.add_argument(
+        "--split",
+        type=str,
+        choices=[const.STEP_SPLIT, const.RECORDINGS_SPLIT],
+        required=True,
+    )
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        choices=[const.SLOWFAST, const.OMNIVORE, const.PERCEPTION_ENCODER],
+        required=True,
+    )
+    parser.add_argument(
+        "--variant",
+        type=str,
+        choices=[const.MLP_VARIANT, const.TRANSFORMER_VARIANT, const.LSTM_VARIANT],
+        required=True,
+    )
     parser.add_argument("--phase", type=str, choices=[const.TEST], default=const.TEST)
-    parser.add_argument("--modality", type=str, nargs="+",choices=[const.VIDEO])
-    parser.add_argument("--ckpt", type=str, required=True)
-    parser.add_argument("--threshold", type=float, required=True, default=0.5)
+    parser.add_argument(
+        "--modality",
+        type=str,
+        nargs="+",
+        default=[const.VIDEO],
+        choices=[const.VIDEO],
+        help="Must match training; default video only",
+    )
+    parser.add_argument("--ckpt", type=str, required=True, help="Path to .pt checkpoint")
+    parser.add_argument("--threshold", type=float, required=True)
+    parser.add_argument(
+        "--segment_features_directory",
+        type=str,
+        default="data/",
+        help="Root containing features/<backbone>/ (same as training)",
+    )
+    parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
 
-    conf = Config()
+    conf = EvalConfig()
     conf.split = args.split
     conf.backbone = args.backbone
     conf.variant = args.variant
     conf.phase = args.phase
     conf.modality = args.modality
-    conf.ckpt_directory = args.ckpt
+    conf.ckpt_path = args.ckpt
+    conf.segment_features_directory = args.segment_features_directory
+    conf.device = args.device
     conf.model_name = None
-    
+
     eval_er(conf, args.threshold)

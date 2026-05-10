@@ -38,8 +38,8 @@ except Exception:
 def parse_arguments():
     parser = argparse.ArgumentParser(description="Segment feature extractor (fast decode, multiple backbones).")
 
-    parser.add_argument("--backbone", type=str, default="omnivore",
-                        help="Options: omnivore, slowfast, x3d, 3dresnet, peav, pe_core")
+    parser.add_argument("--backbone", type=str, default="perception_encoder",
+                        help="Options: omnivore, slowfast, x3d, 3dresnet, peav, pe_core, perception_encoder")
 
     parser.add_argument("--video_dir", type=str,
                         default=r"./data/video",
@@ -48,7 +48,7 @@ def parse_arguments():
                         default=r"./data/features",
                         help="Base output directory (a subfolder per backbone will be created)")
 
-    parser.add_argument("--segment_seconds", type=float, default=5.0,
+    parser.add_argument("--segment_seconds", type=float, default=1,
                         help="Segment length in seconds (bigger = fewer segments, faster).")
     parser.add_argument("--num_workers", type=int, default=1,
                         help="Number of parallel videos to process (keep 1 for small GPUs).")
@@ -59,23 +59,22 @@ def parse_arguments():
                         help="Force disable decord even if installed (debug).")
 
     # --- PE-AV (heavy, kept for compatibility) ---
-    parser.add_argument("--peav_model", type=str, default="facebook/pe-av-base-16-frame",
-                        help="HF model id for PE-AV (heavy).")
-    parser.add_argument("--peav_num_frames", type=int, default=16,
-                        help="Uniform frames sampled per segment for PE-AV.")
-    parser.add_argument("--peav_dtype", type=str, default="fp16", choices=["fp16", "fp32", "bf16"],
-                        help="Autocast dtype for PE-AV on CUDA (GTX1050: fp16 recommended).")
+    #parser.add_argument("--peav_model", type=str, default="facebook/pe-av-base-16-frame",
+    #                    help="HF model id for PE-AV (heavy).")
+    #parser.add_argument("--peav_num_frames", type=int, default=16,
+    #                    help="Uniform frames sampled per segment for PE-AV.")
+    #parser.add_argument("--peav_dtype", type=str, default="fp16", choices=["fp16", "fp32", "bf16"],
+    #                    help="Autocast dtype for PE-AV on CUDA (GTX1050: fp16 recommended).")
 
     # --- PE-Core (light, recommended) ---
     parser.add_argument("--pe_core_model_id", type=str, default="hf-hub:timm/PE-Core-B-16",
-                        help="OpenCLIP model id for PE-Core, e.g. hf-hub:timm/PE-Core-B-16")
-    parser.add_argument("--pe_core_num_frames", type=int, default=8,
-                        help="Uniform frames sampled per segment for PE-Core.")
+                            help="OpenCLIP PE-Core model id")
+    parser.add_argument("--pe_core_num_frames", type=int, default=4,
+                        help="Frames sampled per 1s segment")
     parser.add_argument("--pe_core_dtype", type=str, default="fp16", choices=["fp16", "fp32"],
                         help="Autocast dtype for PE-Core on CUDA.")
-    parser.add_argument("--pe_core_batch_size", type=int, default=32,
+    parser.add_argument("--pe_core_batch_size", type=int, default=8,
                         help="Batch size when encoding frames for PE-Core.")
-
     return parser.parse_args()
 
 
@@ -122,6 +121,13 @@ def _frames_needed_for_backbone(method: str, args) -> int:
     if m in ["pe_core", "pe-core", "pe_core_clip","perception_encoder"]:
         return int(args.pe_core_num_frames)
     return 16
+
+
+def _output_backbone_name(method: str) -> str:
+    """Keep PE-Core aliases compatible with baseline dataloader paths."""
+    if method.lower() in ["pe_core", "pe-core", "pe_core_clip"]:
+        return "perception_encoder"
+    return method
 
 
 def _linspace_indices(start: int, end: int, n: int) -> np.ndarray:
@@ -196,48 +202,125 @@ class PEAVExtractor(torch.nn.Module):
 # -------------------------
 class PECoreExtractor(torch.nn.Module):
     """
-    Light Perception Encoder Core (OpenCLIP style).
-    Input: frames_pil_list: List[PIL.Image]
-    Output: (1, D) tensor
+    PerceptionEncoder Core extractor.
+    Produces ONE embedding per temporal segment.
+
+    Output:
+        (D,) numpy-ready embedding
     """
-    def __init__(self, model_id: str, device: torch.device, autocast_dtype: str = "fp16", batch_size: int = 32):
+
+    def __init__(
+        self,
+        model_id: str,
+        device: torch.device,
+        autocast_dtype: str = "fp16",
+        batch_size: int = 8
+    ):
         super().__init__()
+
         try:
             import open_clip
         except Exception as e:
-            raise ImportError("Please install open_clip_torch and timm:\n  pip install -U open_clip_torch timm") from e
+            raise ImportError(
+                "Please install open_clip_torch and timm:\n"
+                "pip install -U open_clip_torch timm"
+            ) from e
 
         self.device = device
         self.autocast_dtype = autocast_dtype
         self.batch_size = batch_size
 
         model, _, preprocess = open_clip.create_model_and_transforms(model_id)
-        self.model = model.to(self.device).eval()
+
+        self.model = model.to(device).eval()
         self.preprocess = preprocess
+
+        # IMPORTANT: for Step-Graph text matching
+        self.tokenizer = open_clip.get_tokenizer(model_id)
 
     def _autocast_ctx(self):
         if self.device.type != "cuda":
             return nullcontext()
+
         if self.autocast_dtype == "fp16":
             return torch.autocast("cuda", dtype=torch.float16)
+
         return nullcontext()
 
     @torch.inference_mode()
-    def forward(self, frames_pil_list):
-        frames_pil_list = [im.convert("RGB") for im in frames_pil_list]
-        imgs = [self.preprocess(im) for im in frames_pil_list]  # each: (C,H,W)
-        x = torch.stack(imgs, dim=0).to(self.device)            # (T,C,H,W)
+    def encode_video(self, frames_pil_list):
+        """
+        Input:
+            List[PIL.Image]
 
-        feats = []
+        Output:
+            (D,) tensor
+        """
+
+        imgs = [
+            self.preprocess(im.convert("RGB"))
+            for im in frames_pil_list
+        ]
+
+        x = torch.stack(imgs, dim=0).to(self.device)
+
+        all_feats = []
+
         with self._autocast_ctx():
-            for i in range(0, x.shape[0], self.batch_size):
-                xb = x[i:i + self.batch_size]
-                fb = self.model.encode_image(xb, normalize=True)  # (b,D)
-                feats.append(fb)
 
-        feats = torch.cat(feats, dim=0)      # (T,D)
-        seg_feat = feats.mean(dim=0)         # (D,)
-        return seg_feat.unsqueeze(0).float() # (1,D) float32
+            for i in range(0, x.shape[0], self.batch_size):
+
+                xb = x[i:i + self.batch_size]
+
+                fb = self.model.encode_image(
+                    xb,
+                    normalize=True
+                )
+
+                all_feats.append(fb)
+
+        feats = torch.cat(all_feats, dim=0)
+
+        # IMPORTANT:
+        # CaptainCook4D expects ONE embedding per segment
+        seg_feat = feats.mean(dim=0)
+
+        # final normalization
+        seg_feat = seg_feat / seg_feat.norm(dim=-1, keepdim=True)
+
+        return seg_feat.float()
+
+    @torch.inference_mode()
+    def encode_text(self, text_list):
+        """
+        Encode recipe/task-graph step text.
+
+        Example:
+            ["cut tomato", "pour milk"]
+
+        Output:
+            (N,D)
+        """
+
+        tokens = self.tokenizer(text_list).to(self.device)
+
+        with self._autocast_ctx():
+
+            text_feats = self.model.encode_text(
+                tokens,
+                normalize=True
+            )
+
+        text_feats = text_feats / text_feats.norm(
+            dim=-1,
+            keepdim=True
+        )
+
+        return text_feats.float()
+
+    @torch.inference_mode()
+    def forward(self, frames_pil_list):
+        return self.encode_video(frames_pil_list)
 
 
 # -------------------------
@@ -421,12 +504,24 @@ def extract_features(video_data_raw, feature_extractor, transforms_to_apply, met
         feats = feats.float()
         return feats.cpu().numpy()
 
-    if m in ["peav", "pe-av", "pe_av", "pe_core", "pe-core", "pe_core_clip","perception_encoder"]:
-        # list[PIL.Image]
+    if m in [
+        "peav",
+        "pe-av",
+        "pe_av",
+        "pe_core",
+        "pe-core",
+        "pe_core_clip",
+        "perception_encoder"
+    ]:
         video_input = video_inputs
+
         with torch.no_grad():
-            feats = feature_extractor(video_input)  # expected (1,D)
+            feats = feature_extractor(video_input)
+
         feats = feats.float()
+
+        # IMPORTANT:
+        # output shape -> (D,)
         return feats.cpu().numpy()
 
     raise ValueError(f"Unknown method: {method}")
@@ -445,7 +540,7 @@ class VideoProcessor:
 
     def process_video(self, video_name, video_directory_path, output_features_path):
         segment_size_sec = float(self.args.segment_seconds)
-        stride = 1  # keep naming compatible with older code
+        stride = 1
 
         video_path = os.path.join(
             video_directory_path,
@@ -454,28 +549,30 @@ class VideoProcessor:
 
         os.makedirs(output_features_path, exist_ok=True)
         output_file_path = os.path.join(output_features_path, video_name)
-
         out_npz = f"{output_file_path}_{int(segment_size_sec)}s_{int(stride)}s.npz"
+
         if os.path.exists(out_npz):
-            logger.info(f"Skipping video: {video_name}")
+            logging.info(f"Skipping video: {video_name}")
             return
 
         use_decord = (self.args.use_decord and not self.args.no_decord and VideoReader is not None)
 
-        # ---------- FAST PATH: decord open once ----------
+        # ---------- FAST PATH: decord ----------
         if use_decord:
             vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
             real_fps = float(vr.get_avg_fps()) if hasattr(vr, "get_avg_fps") else 30.0
             total_frames = len(vr)
             video_duration = total_frames / real_fps
 
-            logger.info(f"[decord] video: {video_name} duration={video_duration:.2f}s fps={real_fps:.2f} frames={total_frames}")
+            logging.info(f"[decord] video: {video_name} duration={video_duration:.2f}s fps={real_fps:.2f} frames={total_frames}")
 
             decode_frames = _frames_needed_for_backbone(self.method, self.args)
             seg_len_frames = max(int(round(segment_size_sec * real_fps)), 1)
             num_segments = int(np.ceil(total_frames / seg_len_frames))
 
             video_features = []
+            timestamps = []          # 初始化时间戳列表
+
             for seg_idx in tqdm(range(num_segments), desc=f"Processing video segments for video {video_name}"):
                 start_f = seg_idx * seg_len_frames
                 end_f = min(start_f + seg_len_frames, total_frames)
@@ -483,10 +580,7 @@ class VideoProcessor:
                     continue
 
                 idx = _linspace_indices(start_f, end_f, decode_frames)
-
-                # decord: (T,H,W,3) uint8 RGB
                 frames = vr.get_batch(idx).asnumpy()
-                # to torch: (C,T,H,W)
                 segment_video_inputs = torch.from_numpy(frames).permute(3, 0, 1, 2).contiguous()
 
                 seg_feat = extract_features(
@@ -498,25 +592,34 @@ class VideoProcessor:
                 )
                 video_features.append(seg_feat)
 
+                # 记录该段的时间戳（秒）
+                start_sec = start_f / real_fps
+                end_sec = end_f / real_fps
+                timestamps.append([start_sec, end_sec])
+
             if len(video_features) == 0:
-                logger.warning(f"[decord] No segments extracted for video: {video_name}")
+                logging.warning(f"[decord] No segments extracted for video: {video_name}")
                 return
 
             video_features = np.vstack(video_features)
-            np.savez(out_npz, video_features)
-            logger.info(f"[decord] Finished extraction and saving video: {video_name} video_features: {video_features.shape}")
+            timestamps = np.array(timestamps)            # shape (N, 2)
+
+            np.savez(out_npz, features=video_features, timestamps=timestamps)
+            logging.info(f"[decord] Finished extraction and saving video: {video_name} video_features: {video_features.shape}")
             return
 
-        # ---------- FALLBACK: EncodedVideo (slow, seeks a lot) ----------
+        # ---------- FALLBACK: EncodedVideo ----------
         video = EncodedVideo.from_path(video_path)
         video_duration = float(video.duration)
 
-        logger.info(f"[encodedvideo] video: {video_name} duration={video_duration:.2f}s")
+        logging.info(f"[encodedvideo] video: {video_name} duration={video_duration:.2f}s")
         segment_end = max(video_duration - segment_size_sec + 1, 1)
 
         video_features = []
+        timestamps = []          # 初始化时间戳列表
+
         for start_time in tqdm(np.arange(0, segment_end, segment_size_sec),
-                               desc=f"Processing video segments for video {video_name}"):
+                            desc=f"Processing video segments for video {video_name}"):
             end_time = min(start_time + segment_size_sec, video_duration)
             if end_time - start_time < 0.04:
                 continue
@@ -532,15 +635,17 @@ class VideoProcessor:
                 device=self.device
             )
             video_features.append(seg_feat)
+            timestamps.append([start_time, end_time])   # 直接使用秒值
 
         if len(video_features) == 0:
-            logger.warning(f"[encodedvideo] No segments extracted for video: {video_name}")
+            logging.warning(f"[encodedvideo] No segments extracted for video: {video_name}")
             return
 
         video_features = np.vstack(video_features)
-        np.savez(out_npz, video_features)
-        logger.info(f"[encodedvideo] Finished extraction and saving video: {video_name} video_features: {video_features.shape}")
+        timestamps = np.array(timestamps)
 
+        np.savez(out_npz, features=video_features, timestamps=timestamps)
+        logging.info(f"[encodedvideo] Finished extraction and saving video: {video_name} video_features: {video_features.shape}")
 
 # -------------------------
 # Main
@@ -555,7 +660,7 @@ def main(args):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     video_files_path = args.video_dir
-    output_features_path = os.path.join(args.output_dir, method)
+    output_features_path = os.path.join(args.output_dir, _output_backbone_name(method))
 
     video_transform = get_video_transformation(method, args)
     feature_extractor = get_feature_extractor(method, device=device, args=args)

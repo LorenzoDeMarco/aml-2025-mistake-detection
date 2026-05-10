@@ -1,35 +1,18 @@
 import argparse
-import glob
-import os
 import pickle
 from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
 
+from dataloader.feature_io import find_segment_npz_in_directory
+
 
 def find_feature_file(features_dir: Path, recording_id: str) -> Path:
-    """
-    Try to locate the .npz feature file for a given recording_id.
-    Typical patterns:
-        {recording_id}*_1s_1s.npz
-        {recording_id}*.npz
-    """
-    patterns = [
-        str(features_dir / f"{recording_id}*_1s_1s.npz"),
-        str(features_dir / f"{recording_id}*.npz"),
-    ]
-    matches = []
-    for p in patterns:
-        matches.extend(glob.glob(p))
-    matches = sorted(set(matches))
-    if not matches:
-        raise FileNotFoundError(
-            f"Cannot find feature file for recording_id='{recording_id}'.\n"
-            f"features_dir: {features_dir}\n"
-            f"Tried patterns: {patterns}"
-        )
-    return Path(matches[0])
+    """Locate segment .npz (canonical name + glob fallback, same as ActionFormer error dataset)."""
+    return Path(
+        find_segment_npz_in_directory(str(features_dir), recording_id, "", ".npz")
+    )
 
 
 def load_npz_array(npz_path: Path) -> np.ndarray:
@@ -38,13 +21,24 @@ def load_npz_array(npz_path: Path) -> np.ndarray:
     If saved by np.savez(path, array), default key is usually 'arr_0'.
     """
     d = np.load(npz_path, allow_pickle=False)
-    if "feats" in d:
+    if "features" in d:
+        arr = d["features"]
+    elif "feats" in d:
         arr = d["feats"]
     elif "arr_0" in d:
         arr = d["arr_0"]
     else:
-        k0 = list(d.keys())[0]
-        arr = d[k0]
+        arr = None
+        for k in d.keys():
+            if k == "timestamps":
+                continue
+            candidate = d[k]
+            if hasattr(candidate, "ndim") and candidate.ndim == 2:
+                arr = candidate
+                break
+        if arr is None:
+            k0 = list(d.keys())[0]
+            arr = d[k0]
 
     arr = np.asarray(arr)
     # Some pipelines may produce (T, 1, D); flatten it.

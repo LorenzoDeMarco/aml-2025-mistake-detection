@@ -1,4 +1,5 @@
 import csv
+import json
 import os
 
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
@@ -14,7 +15,7 @@ from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_sco
 from torcheval.metrics.functional import binary_auprc
 from tqdm import tqdm
 
-from core.models.blocks import fetch_input_dim, MLP
+from core.models.blocks import fetch_input_dim, MLP, LSTM
 from core.models.er_former import ErFormer
 from dataloader.CaptainCookStepDataset import collate_fn, CaptainCookStepDataset
 from dataloader.CaptainCookSubStepDataset import CaptainCookSubStepDataset
@@ -25,7 +26,7 @@ def fetch_model_name(config):
         return fetch_model_name_ecr(config)
     elif config.task_name in  [const.EARLY_ERROR_RECOGNITION, const.ERROR_RECOGNITION]:
         if config.model_name is None:
-            if config.backbone in [const.RESNET3D, const.X3D, const.SLOWFAST, const.OMNIVORE]:
+            if config.backbone in [const.RESNET3D, const.X3D, const.SLOWFAST, const.OMNIVORE,const.PERCEPTION_ENCODER]:
                 config.model_name = f"{config.task_name}_{config.split}_{config.backbone}_{config.variant}_{config.modality[0]}"
             elif config.backbone == const.IMAGEBIND:
                 combined_modality_name = '_'.join(config.modality)
@@ -44,12 +45,16 @@ def fetch_model_name_ecr(config):
 def fetch_model(config):
     model = None
     if config.variant == const.MLP_VARIANT:
-        if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
+        if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND,const.PERCEPTION_ENCODER]:
             input_dim = fetch_input_dim(config)
             model = MLP(input_dim, 512, 1)
     elif config.variant == const.TRANSFORMER_VARIANT:
-        if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
+        if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND,const.PERCEPTION_ENCODER]:
             model = ErFormer(config)
+        #setup2: add LSTM model baseline
+    elif config.variant == const.LSTM_VARIANT:
+        input_dim = fetch_input_dim(config)
+        model = LSTM(input_dim)
 
     assert model is not None, f"Model not found for variant: {config.variant} and backbone: {config.backbone}"
     model.to(config.device)
@@ -62,6 +67,48 @@ def convert_and_round(value):
         return np.round(value.numpy(), 2)
     return np.round(value, 2)
 
+#setup1: add error type metrics saving
+def _load_error_type_list(error_category_idx_path: str = "annotations/annotation_json/error_category_idx.json"):
+    """Return error type names in stable order."""
+    try:
+        with open(error_category_idx_path, "r") as f:
+            mapping = json.load(f)  # {name: idx}
+        return [k for k, _ in sorted(mapping.items(), key=lambda kv: kv[1])]
+    except Exception:
+        return [
+            "Preparation Error",
+            "Measurement Error",
+            "Order Error",
+            "Timing Error",
+            "Technique Error",
+            "Temperature Error",
+            "Missing Step",
+            "Other",
+        ]
+
+def _safe_roc_auc(y_true: np.ndarray, y_score: np.ndarray):
+    try:
+        return roc_auc_score(y_true, y_score)
+    except Exception:
+        return float("nan")
+
+def _compute_binary_metrics(y_true: np.ndarray, y_score: np.ndarray, threshold: float):
+    y_pred = (y_score > threshold).astype(int)
+    precision = precision_score(y_true, y_pred, zero_division=0)
+    recall = recall_score(y_true, y_pred, zero_division=0)
+    f1 = f1_score(y_true, y_pred, zero_division=0)
+    accuracy = accuracy_score(y_true, y_pred)
+    auc = _safe_roc_auc(y_true, y_score)
+    pr_auc = binary_auprc(torch.tensor(y_pred), torch.tensor(y_true))
+    return {
+        const.PRECISION: precision,
+        const.RECALL: recall,
+        const.F1: f1,
+        const.ACCURACY: accuracy,
+        const.AUC: auc,
+        const.PR_AUC: pr_auc,
+    }
+#end setup1
 
 def collate_stats(config, sub_step_metrics, step_metrics):
     collated_stats = [config.split, config.backbone, config.variant, config.modality]
@@ -97,6 +144,44 @@ def save_results_to_csv(config, sub_step_metrics, step_metrics, step_normalizati
             ])
         writer.writerow(collated_stats)
 
+# setup1: add error type metrics saving
+def save_error_type_results_to_csv(config, error_type_metrics, step_normalization=False, sub_step_normalization=False,
+                                   threshold=0.5):
+    results_dir = os.path.join(os.getcwd(), const.RESULTS)
+    task_results_dir = os.path.join(results_dir, config.task_name, "error_type_results")
+    os.makedirs(task_results_dir, exist_ok=True)
+    config.model_name = fetch_model_name(config)
+
+    results_file_path = os.path.join(
+        task_results_dir,
+        f"step_{step_normalization}_substep_{sub_step_normalization}_threshold_{threshold}.csv",
+    )
+    file_exist = os.path.isfile(results_file_path)
+
+    with open(results_file_path, "a", newline="") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_NONNUMERIC)
+        if not file_exist:
+            writer.writerow([
+                "Split", "Backbone", "Variant", "Modality", "Error Type",
+                "Pos Count", "Neg Count",
+                "Precision", "Recall", "F1", "Accuracy", "AUC", "PR AUC",
+            ])
+        for error_type, metrics in error_type_metrics.items():
+            writer.writerow([
+                config.split, config.backbone, config.variant, config.modality, error_type,
+                int(metrics.get("pos_count", 0)), int(metrics.get("neg_count", 0)),
+                convert_and_round(metrics[const.PRECISION]),
+                convert_and_round(metrics[const.RECALL]),
+                convert_and_round(metrics[const.F1]),
+                convert_and_round(metrics[const.ACCURACY]),
+                convert_and_round(metrics[const.AUC]) if not np.isnan(metrics[const.AUC]) else metrics[const.AUC],
+                convert_and_round(metrics[const.PR_AUC]),
+            ])
+
+def save_error_type_results(config, error_type_metrics, step_normalization=False, sub_step_normalization=False,
+                            threshold=0.5):
+    save_error_type_results_to_csv(config, error_type_metrics, step_normalization, sub_step_normalization, threshold)
+# end setup1
 
 def save_results(config, sub_step_metrics, step_metrics, step_normalization=False, sub_step_normalization=False,
                  threshold=0.5):
@@ -105,16 +190,17 @@ def save_results(config, sub_step_metrics, step_metrics, step_normalization=Fals
 
 
 def store_model(model, config, ckpt_name: str):
-    task_directory = os.path.join(config.ckpt_directory, config.task_name)
-    os.makedirs(task_directory, exist_ok=True)
+    
+    ckpt_directory = os.path.join(config.segment_features_directory,config.ckpt_directory)
+    os.makedirs(ckpt_directory, exist_ok=True)
 
-    variant_directory = os.path.join(task_directory, config.variant)
+    backbone_directory = os.path.join(ckpt_directory, config.backbone)
+    os.makedirs(backbone_directory, exist_ok=True)
+    
+    variant_directory = os.path.join(backbone_directory, config.variant)
     os.makedirs(variant_directory, exist_ok=True)
 
-    backbone_directory = os.path.join(variant_directory, config.backbone)
-    os.makedirs(backbone_directory, exist_ok=True)
-
-    ckpt_file_path = os.path.join(backbone_directory, ckpt_name)
+    ckpt_file_path = os.path.join(variant_directory, ckpt_name)
     torch.save(model.state_dict(), ckpt_file_path)
 
 
@@ -265,11 +351,11 @@ def train_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 8,
+        "num_workers": 0,
         "pin_memory": False,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": config.batch_size}
-    test_kwargs = {**cuda_kwargs, "shuffle": False, "batch_size": 1}
+    test_kwargs = {**cuda_kwargs, "shuffle": False, "batch_size": 256}
 
     print("-------------------------------------------------------------")
     print("Training step model and testing on step level")
@@ -286,7 +372,7 @@ def train_step_test_step_dataset_base(config):
     val_loader = DataLoader(val_dataset, collate_fn=collate_fn, **test_kwargs)
     test_dataset = CaptainCookStepDataset(config, const.TEST, config.split)
     test_loader = DataLoader(test_dataset, collate_fn=collate_fn, **test_kwargs)
-
+    
     return train_loader, val_loader, test_loader
 
 
@@ -294,15 +380,15 @@ def train_sub_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 1,
+        "num_workers": 0,
         "pin_memory": False,
     }
-    train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": 1024}
-    test_kwargs = {**cuda_kwargs, "shuffle": False, "batch_size": 1}
+    train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": 256}
+    test_kwargs = {**cuda_kwargs, "shuffle": False, "batch_size": 256}
 
     train_dataset = CaptainCookSubStepDataset(config, const.TRAIN, config.split)
     train_loader = DataLoader(train_dataset, collate_fn=collate_fn, **train_kwargs)
-    val_dataset = CaptainCookStepDataset(config, const.TEST, config.split)
+    val_dataset = CaptainCookStepDataset(config, const.VAL, config.split)
     val_loader = DataLoader(val_dataset, collate_fn=collate_fn, **test_kwargs)
     test_dataset = CaptainCookStepDataset(config, const.TEST, config.split)
     test_loader = DataLoader(test_dataset, collate_fn=collate_fn, **test_kwargs)
@@ -319,9 +405,9 @@ def train_sub_step_test_step_dataset_base(config):
 
 # ----------------------- TEST BASE FILES -----------------------
 
-
+# setup1: add error type metrics parameter
 def test_er_model(model, test_loader, criterion, device, phase, step_normalization=True, sub_step_normalization=True,
-                  threshold=0.6):
+                  threshold=0.6, return_error_type_metrics: bool = False):
     total_samples = 0
     all_targets = []
     all_outputs = []
@@ -334,7 +420,20 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     counter = 0
 
     with torch.no_grad():
-        for data, target in test_loader:
+        #setup1: modify to get error meta info
+        step_metas = []
+        for batch in test_loader:
+            if isinstance(batch, (list, tuple)) and len(batch) == 2:
+                data, target = batch
+                meta = None
+            elif isinstance(batch, (list, tuple)) and len(batch) == 3:
+                data, target, metas = batch
+                if len(metas) != 1:
+                    raise ValueError("Expected test_batch_size=1 for meta evaluation")
+                meta = metas[0]
+            else:
+                raise ValueError("Unexpected batch format")
+            
             data, target = data.to(device), target.to(device)
             output = model(data)
             total_samples += data.shape[0]
@@ -346,6 +445,9 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
             all_targets.append(target.detach().cpu().numpy().reshape(-1))
 
             test_step_start_end_list.append((counter, counter + data.shape[0]))
+            if meta is not None:
+                step_metas.append(meta)
+          
             counter += data.shape[0]
 
             # Set the description of the tqdm instance to show the loss
@@ -404,12 +506,14 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
         #     step_output = neg_output
         step_output = np.array(step_output)
         # # Scale the output to [0, 1]
-        if start - end > 1:
+        if end - start > 1:
             if sub_step_normalization:
                 prob_range = np.max(step_output) - np.min(step_output)
-                step_output = (step_output - np.min(step_output)) / prob_range
+                if prob_range > 0:
+                    step_output = (step_output - np.min(step_output)) / prob_range
 
-        mean_step_output = np.mean(step_output)
+        # mean_step_output = np.mean(step_output)
+        mean_step_output = float(np.mean(step_output))
         step_target = 1 if np.mean(step_target) > 0.95 else 0
 
         all_step_outputs.append(mean_step_output)
@@ -420,7 +524,8 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     # # Scale the output to [0, 1]
     if step_normalization:
         prob_range = np.max(all_step_outputs) - np.min(all_step_outputs)
-        all_step_outputs = (all_step_outputs - np.min(all_step_outputs)) / prob_range
+        if prob_range > 0:
+            all_step_outputs = (all_step_outputs - np.min(all_step_outputs)) / prob_range
 
     all_step_targets = np.array(all_step_targets)
 
@@ -442,6 +547,25 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
         const.AUC: auc,
         const.PR_AUC: pr_auc
     }
+    #setup1: add error type metrics
+    error_type_metrics = None
+    if len(step_metas) == len(all_step_outputs) and len(step_metas) > 0:
+        error_types = _load_error_type_list()
+        present_tags = set()
+        for m in step_metas:
+            for t in m.get("error_tags", []):
+                present_tags.add(t)
+        for t in sorted(present_tags - set(error_types)):
+            error_types.append(t)
+
+        error_type_metrics = {}
+        for error_type in error_types:
+            y_true = np.array([1 if error_type in m.get("error_tags", []) else 0 for m in step_metas], dtype=int)
+            metrics = _compute_binary_metrics(y_true, all_step_outputs, threshold)
+            metrics["pos_count"] = int(np.sum(y_true == 1))
+            metrics["neg_count"] = int(np.sum(y_true == 0))
+            error_type_metrics[error_type] = metrics
+     #setup1 end
 
     # Print step level metrics
     print("----------------------------------------------------------------")
@@ -449,4 +573,8 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     print(f"{phase} Step Level Metrics: {step_metrics}")
     print("----------------------------------------------------------------")
 
+    #setup1: modify return to include error type metrics
+    if return_error_type_metrics:
+       print(f"{phase} Step Level Error Type Metrics: {error_type_metrics}")
+       return test_losses, sub_step_metrics, step_metrics, (error_type_metrics or {})
     return test_losses, sub_step_metrics, step_metrics

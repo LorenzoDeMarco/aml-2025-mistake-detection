@@ -7,6 +7,8 @@ import torch
 from torch.utils.data import Dataset
 from constants import Constants as const
 
+from dataloader.feature_io import find_segment_feature_npz, load_segment_features_from_npz
+
 
 class CaptainCookStepDataset(Dataset):
 
@@ -260,15 +262,13 @@ class CaptainCookStepDataset(Dataset):
         return step_features, step_labels
 
     def _get_video_features(self, recording_id, step_start_end_list):
-        if self._backbone in [const.OMNIVORE, const.SLOWFAST]:
-            features_path = os.path.join(
+        if self._backbone in [const.OMNIVORE, const.SLOWFAST, const.PERCEPTION_ENCODER]:
+            features_path = find_segment_feature_npz(
                 self._config.segment_features_directory,
-                "features",
                 self._backbone,
-                f'{recording_id}_360p.mp4_1s_1s.npz'
+                recording_id,
             )
-            features_data = np.load(features_path)
-            recording_features = features_data['arr_0']
+            recording_features = load_segment_features_from_npz(features_path)
         elif self._backbone == const.EGOVLP:
             features_path = os.path.join(
                 self._config.segment_features_directory,
@@ -277,16 +277,6 @@ class CaptainCookStepDataset(Dataset):
                 f'{recording_id}.npy'
             )
             recording_features = np.load(features_path)
-        elif self._backbone == const.PERCEPTION_ENCODER:
-            features_path = os.path.join(
-                self._config.segment_features_directory,
-                "features",
-                "perception_encoder",
-                f'{recording_id}_360p.mp4_1s_1s.npz'
-            )
-            with np.load(features_path) as f:
-                arr = f["arr_0"] if "arr_0" in f.files else f[f.files[0]]
-            recording_features = arr
         else:
             raise ValueError(f"Unsupported backbone: {self._backbone}")
         step_features, step_labels = self._build_modality_step_features_labels(
@@ -302,7 +292,9 @@ class CaptainCookStepDataset(Dataset):
         step_features = None
         step_labels = None
         
-        assert self._backbone in [const.OMNIVORE, const.SLOWFAST, const.EGOVLP, const.PERCEPTION_ENCODER], "Only Omnivore and SlowFast are supported with this codebase"
+        assert self._backbone in [const.OMNIVORE, const.SLOWFAST, const.EGOVLP, const.PERCEPTION_ENCODER], (
+            "Only Omnivore, SlowFast, EgoVLP, and PerceptionEncoder are supported with this codebase"
+        )
         step_features, step_labels = self._get_video_features(recording_id, step_start_end_list)
 
         assert step_features is not None, f"Features not found for recording_id: {recording_id}"

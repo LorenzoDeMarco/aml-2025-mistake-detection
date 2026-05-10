@@ -4,6 +4,10 @@ class Constants:
     DATE = "date"
     RESULT_DETAILS = "result_details"
     BEST_MODEL_TYPE = "best_model_type"
+    
+    EGOVLP = "egovlp"
+    PERCEPTION_ENCODER = "perception_encoder"
+    LSTM_VARIANT = "LSTM"
 
     ACCURACY = "accuracy"
     LOSS = "loss"
