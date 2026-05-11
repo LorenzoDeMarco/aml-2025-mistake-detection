@@ -23,7 +23,7 @@ class EvalConfig:
     ckpt_path: Optional[str] = None
     seed: int = 1000
     device: str = "cuda"
-    variant: str = const.MLP_VARIANT
+    variant: str = const.TRANSFORMER_VARIANT
     task_name: str = const.ERROR_RECOGNITION
     model_name: Optional[str] = None
 

@@ -26,9 +26,11 @@ def main():
     if conf.enable_wandb:
         init_logger_and_wandb(conf)
 
-    train_sub_step_test_step_er(conf)
-    #train_step_test_step_er(conf)
-    
+    if getattr(conf, "train_mode", "sub_step") == "step":
+        train_step_test_step_er(conf)
+    else:
+        train_sub_step_test_step_er(conf)
+
     if conf.enable_wandb:
         wandb.finish()
 

@@ -81,13 +81,13 @@ python core/extractor/PerceptionEncoder_feature_extractor.py
 ### Generate checkpoint:
 
 ```bash
-python train_er.py --backbone perception_encoder --variant MLP  --split recordings 
+python train_er.py --backbone perception_encoder --variant Transformer --split recordings --batch_size 256--num_epochs 10
 ```
 
 ### Evaluation:
 
 ```bash
-python -m core.evaluate --variant MLP --backbone perception_encoder --modality video --ckpt data/checkpoints/perception_encoder/MLP/error_recognition_recordings_perception_encoder_MLP_video_epoch_5.pt  --split recordings --threshold 0.4
+python -m core.evaluate --variant Transformer --backbone perception_encoder --modality video --ckpt data/checkpoints/perception_encoder/Transformer/error_recognition_recordings_perception_encoder_Transformer_video_epoch_10.pt --split recordings --threshold 0.7
 ```
 
 ## Outputs

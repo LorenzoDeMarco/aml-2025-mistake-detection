@@ -32,15 +32,17 @@ class Config(object):
         self.device = "cuda"
 
         #self.variant = const.TRANSFORMER_VARIANT
-        self.variant = const.MLP_VARIANT
+        self.variant = const.TRANSFORMER_VARIANT
         self.model_name = None
         self.task_name = const.ERROR_RECOGNITION
         self.error_category = None
 
         self.enable_wandb = True
 
-        self.parser = self.setup_parser()
-        self.args = vars(self.parser.parse_args())
+        # Do not store ArgumentParser on self: it is not picklable and breaks
+        # DataLoader(num_workers>0) on Windows when Dataset holds config.
+        _parser = self.setup_parser()
+        self.args = vars(_parser.parse_args())
         self.save_model = True
         self.__dict__.update(self.args)
         if getattr(self, "no_wandb", False):
@@ -68,7 +70,7 @@ class Config(object):
         parser.add_argument("--backbone", type=str, default=const.PERCEPTION_ENCODER, help="backbone model")
         parser.add_argument("--ckpt_directory", type=str, default="./checkpoints", help="checkpoint directory")
         parser.add_argument("--split", type=str, default=const.RECORDINGS_SPLIT, help="split")
-        parser.add_argument("--variant", type=str, default=const.MLP_VARIANT, help="variant")
+        parser.add_argument("--variant", type=str, default=const.TRANSFORMER_VARIANT, help="variant")
         parser.add_argument("--model_name", type=str, default=None, help="model name")
         parser.add_argument("--task_name", type=str, default=const.ERROR_RECOGNITION, help="task name")
         parser.add_argument("--error_category", type=str, help="error category")

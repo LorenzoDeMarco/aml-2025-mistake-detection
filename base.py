@@ -2,6 +2,11 @@ import csv
 import json
 import os
 
+# DataLoader workers. Config no longer holds unpickleable ArgumentParser, so Windows can use multiprocessing.
+# Cap at 4; use min(cpu_count, 4) so a 4-core machine uses 4 workers.
+_CPU = os.cpu_count() or 1
+_DATALOADER_NUM_WORKERS = max(1, min(4, _CPU))
+
 from torch.optim.lr_scheduler import StepLR, ReduceLROnPlateau
 
 import wandb
@@ -351,7 +356,7 @@ def train_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 2,
+        "num_workers": _DATALOADER_NUM_WORKERS,
         "pin_memory": True,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": config.batch_size}
@@ -380,7 +385,7 @@ def train_sub_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 2,
+        "num_workers": _DATALOADER_NUM_WORKERS,
         "pin_memory": True,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": 256}
