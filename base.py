@@ -121,7 +121,7 @@ def collate_stats(config, sub_step_metrics, step_metrics):
 
 
 def save_results_to_csv(config, sub_step_metrics, step_metrics, step_normalization=False, sub_step_normalization=False,
-                        threshold=0.5):
+                        threshold=0.7):
     results_dir = os.path.join(os.getcwd(), const.RESULTS)
     task_results_dir = os.path.join(results_dir, config.task_name, "combined_results")
     os.makedirs(task_results_dir, exist_ok=True)
@@ -146,7 +146,7 @@ def save_results_to_csv(config, sub_step_metrics, step_metrics, step_normalizati
 
 # setup1: add error type metrics saving
 def save_error_type_results_to_csv(config, error_type_metrics, step_normalization=False, sub_step_normalization=False,
-                                   threshold=0.5):
+                                   threshold=0.7):
     results_dir = os.path.join(os.getcwd(), const.RESULTS)
     task_results_dir = os.path.join(results_dir, config.task_name, "error_type_results")
     os.makedirs(task_results_dir, exist_ok=True)
@@ -179,12 +179,12 @@ def save_error_type_results_to_csv(config, error_type_metrics, step_normalizatio
             ])
 
 def save_error_type_results(config, error_type_metrics, step_normalization=False, sub_step_normalization=False,
-                            threshold=0.5):
+                            threshold=0.7):
     save_error_type_results_to_csv(config, error_type_metrics, step_normalization, sub_step_normalization, threshold)
 # end setup1
 
 def save_results(config, sub_step_metrics, step_metrics, step_normalization=False, sub_step_normalization=False,
-                 threshold=0.5):
+                 threshold=0.7):
     # 1. Save evaluation results to csv
     save_results_to_csv(config, sub_step_metrics, step_metrics, step_normalization, sub_step_normalization, threshold)
 
@@ -407,7 +407,7 @@ def train_sub_step_test_step_dataset_base(config):
 
 # setup1: add error type metrics parameter
 def test_er_model(model, test_loader, criterion, device, phase, step_normalization=True, sub_step_normalization=True,
-                  threshold=0.6, return_error_type_metrics: bool = False):
+                  threshold=0.7, return_error_type_metrics: bool = False):
     total_samples = 0
     all_targets = []
     all_outputs = []
@@ -465,7 +465,7 @@ def test_er_model(model, test_loader, criterion, device, phase, step_normalizati
     all_sub_step_outputs = all_outputs.copy()
 
     # Calculate metrics at the sub-step level
-    pred_sub_step_labels = (all_sub_step_outputs > 0.5).astype(int)
+    pred_sub_step_labels = (all_sub_step_outputs > 0.7).astype(int)
     sub_step_precision = precision_score(all_sub_step_targets, pred_sub_step_labels)
     sub_step_recall = recall_score(all_sub_step_targets, pred_sub_step_labels)
     sub_step_f1 = f1_score(all_sub_step_targets, pred_sub_step_labels)
