@@ -351,8 +351,8 @@ def train_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 0,
-        "pin_memory": False,
+        "num_workers": 2,
+        "pin_memory": True,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": config.batch_size}
     test_kwargs = {**cuda_kwargs, "shuffle": False, "batch_size": 256}
@@ -380,8 +380,8 @@ def train_sub_step_test_step_dataset_base(config):
     torch.manual_seed(config.seed)
 
     cuda_kwargs = {
-        "num_workers": 0,
-        "pin_memory": False,
+        "num_workers": 2,
+        "pin_memory": True,
     }
     train_kwargs = {**cuda_kwargs, "shuffle": True, "batch_size": 256}
     test_kwargs = {**cuda_kwargs, "shuffle": False, "batch_size": 256}
