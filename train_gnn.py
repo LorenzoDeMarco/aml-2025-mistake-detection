@@ -98,9 +98,12 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
             for idx in train_idx:
                 sample = dataset[idx]
                 
-                # Forward pass of the single graph
-                logits = model(sample['v'], sample['t'], sample['adj'])
-                loss = criterion(logits, sample['y'])
+                # Forward pass: add a batch dimension of 1 using .view(1)
+                logits = model(sample['v'], sample['t'], sample['adj']).view(1)
+                target = sample['y'].view(1)
+                
+                # Calculate loss with matching 1D shapes
+                loss = criterion(logits, target)
                 
                 scaled_loss = loss/len(train_idx)
                 scaled_loss.backward()
