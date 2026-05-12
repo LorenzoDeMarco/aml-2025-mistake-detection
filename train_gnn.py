@@ -72,9 +72,18 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
         test_recipe_id = groups[test_idx[0]]
         print(f"--- Fold {fold + 1}/{len(groups)} (Test Recipe: {test_recipe_id}) ---")
         
+        # Count positive and negative samples in the current training set
+        train_labels = [labels[i] for i in train_idx]
+        num_pos = sum(train_labels)
+        num_neg = len(train_labels) - num_pos
+
+        # Calculate pos_weight (Negative count / Positive count)
+        # This heavily penalizes the model if it gets the minority class wrong
+        pos_weight_val = torch.tensor([num_neg / (num_pos + 1e-5)], dtype=torch.float32).to(device)
+        
         # Initialize a fresh model for each fold
         model = GraphClassifier(visual_dim=v_dim, text_dim=t_dim, hidden_dim=256, num_layers=2).to(device)
-        criterion = nn.BCEWithLogitsLoss()
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)
         optimizer = optim.Adam(model.parameters(), lr=1e-4)
         
         # Training
@@ -93,7 +102,9 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
                 logits = model(sample['v'], sample['t'], sample['adj'])
                 loss = criterion(logits, sample['y'])
                 
-                loss.backward()
+                scaled_loss = loss/len(train_idx)
+                scaled_loss.backward()
+                
                 epoch_loss += loss.item()
                 
             # Update weights once the entire epoch is passed (Full-batch Gradient Descent)

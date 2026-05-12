@@ -12,7 +12,9 @@ class GraphClassifier(nn.Module):
         self.gnn_layers = nn.ModuleList([
             nn.Linear(text_dim, text_dim) for _ in range(num_layers)
         ])
-     
+        
+        self.norm = nn.LayerNorm(text_dim)
+         
         self.classifier = nn.Sequential(
             nn.Linear(text_dim, hidden_dim),
             nn.ReLU(),
@@ -32,6 +34,8 @@ class GraphClassifier(nn.Module):
         for layer in self.gnn_layers:
             support = layer(x)
             x = F.relu(torch.matmul(adj_matrix, support) + x)
+            
+            x = self.norm(x)
             
         graph_rep = x.mean(dim=0)
         
