@@ -280,6 +280,48 @@ The task verification model was evaluated using the strict Leave-One-Group-Out (
 | :------------- | :------------------ | :-------------- |
 | **Recordings** | Leave-One-Group-Out | **61.20%**      |
 
+## Substep 3.3: Task-Graph encoding and step matching
+
+### Implementation analysis
+
+To satisfy requirements and seamlessly integrate them into the overall architecture, the implementation focused on separating the static feature pre-computation from the dynamic, differentiable matching logic:
+
+* **Latent extraction and alignment:** The textual features of the task graphs were pre-extracted statically, saved into `.npz` files (`text_npz`), and dynamically loaded for each video alongside the visual features (`visual_npz`). Since both modalities derive from the EgoVLP architecture, they reside in the same shared latent space, allowing for direct similarity-based comparisons.
+* **The `StepMatchingModule`:** The projection and assignment logic was encapsulated within a dedicated PyTorch module (`core.models.step_matching.StepMatchingModule`). This component receives the visual tensors (dimension 768) and textual tensors (dimension 256) as input for each recipe graph.
+* **Learnable Update:** Instead of a simple feature concatenation, the module returns the updated nodes (`update_nodes`). Internally, it manages the assignment matrix (conceptually implementing the Hungarian matching) and applies the required linear transformation to fuse the two modalities. The textual nodes, now enriched with their corresponding visual context, become the direct input for the subsequent Graph Neural Network message-passing layers.
+
+
+| **PDF Requirement**           | **Implemented Solution**                                 | **Architectural Component**               |
+| ----------------------------- | -------------------------------------------------------- | ----------------------------------------- |
+| **Textual Encoding (EgoVLP)** | Static pre-extraction and loading via`.npz`files         | Data Loading Pipeline (`load_graph_data`) |
+| **Step Matching (Hungarian)** | Similarity computation and one-to-one assignment logic   | `StepMatchingModule`                      |
+| **Learnable Projection**      | Linear fusion of`visual_feats`(768) and`text_feats`(256) | `StepMatchingModule`                      |
+
+## Substep 4: Graph Neural Network optimization and debugging
+
+### Graph representation
+
+In this substep, recipe executions are modeled as directed graphs to capture complex multi-step relationships. The visual and textual step embeddings serve as interconnected nodes, linked by an adjacency matrix that enforces sequential temporal edges alongside self-loops, which retain intrinsic node features during the message passing phase.
+
+### Algorithmic modifications
+
+Initial training iterations of the `GraphClassifier` exhibited severe Mode Collapse, predominantly predicting the majority class (`1.0`). To achieve numerical stability and optimize the learning dynamics, three fundamental architectural and training modifications were implemented:
+
+1. **Gradient Normalization:** To prevent gradient explosion during the full-batch gradient descent loop, the accumulated loss is explicitly scaled by the training set size (`loss / len(train_idx)`) prior to backpropagation.
+2. **Activation Stabilization:** A Layer Normalization (`nn.LayerNorm`) module was introduced within the `GraphClassifier` to bound the exponential growth of node features after support matrix multiplication during message passing.
+3. **Dynamic Class Weighting:** To counteract the dataset's intrinsic class imbalance, a dynamic `pos_weight` is computed for each LOGO fold to penalize minority class misclassifications. This tensor is reshaped via `.view(1)` to ensure strict dimensional compatibility and valid broadcasting within PyTorch's `BCEWithLogitsLoss` function.
+
+### Optimization impact
+
+The integration of these modifications resolved the mode collapse phenomenon, allowing the network to explore mixed predictions and stabilize the optimization trajectory.
+
+
+| **Identified Issue**     | **Implemented Solution**                             | **Target Component**                |
+| ------------------------ | ---------------------------------------------------- | ----------------------------------- |
+| **Gradient Explosion**   | Loss scaling (`scaled_loss = loss / len(train_idx)`) | Full-Batch Training Loop            |
+| **Activation Explosion** | Node feature normalization (`nn.LayerNorm`)          | Graph Message Passing               |
+| **Class Imbalance**      | Dynamic`pos_weight`calculation with`.view(1)`        | Loss Function (`BCEWithLogitsLoss`) |
+
 ## Acknowledgements
 
 This project builds on many repositories from the CaptainCook4D release. Please refer to the original codebases for more details.
