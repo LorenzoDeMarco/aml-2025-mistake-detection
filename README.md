@@ -137,6 +137,11 @@ with the resault of:
 | **AUC (ROC)** | 0.635 |
 | **PR-AUC** | 0.6483 |
 
+# Task Graph Encoding
+
+```
+ python .\substep3_3\taskGraphEncoding.py --substep1_dir output_KFold_1s_step_embedding --task_graph_dir annotations/task_graphs --avg_csv annotations/annotation_csv/average_segment_length.csv --out_dir .\substep3_3\output_3_3 --text_batch_size 64 --sim_threshold 0.2
+```
 
 
 ## Acknowledgements
