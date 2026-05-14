@@ -166,6 +166,7 @@ checkpoints
 wandb
 stats
 error_recognition_best
+substep3_3/
 
 results
 .vscode
