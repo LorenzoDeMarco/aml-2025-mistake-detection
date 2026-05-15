@@ -322,12 +322,29 @@ The integration of these modifications resolved the mode collapse phenomenon, al
 | **Activation Explosion** | Node feature normalization (`nn.LayerNorm`)          | Graph Message Passing               |
 | **Class Imbalance**      | Dynamic`pos_weight`calculation with`.view(1)`        | Loss Function (`BCEWithLogitsLoss`) |
 
-Migliorie da segnare:
+Migliorie da segnare step ottimizzazione 1:
 
 - INTRODUZIONE DROPOUT IN GNN
 - MAX POOLING READOUT AL POSTO DI MEDIA IN FROWARD STEP
 - OTTIMIZZAZIONE DEL GRADIENTE PER OGNI GRAFO E NON A OGNI EPOCA
 - BACKWORD STEP NEL GRAFO AGGIUNTO
+
+risultati:
+
+Acc: 0.5599
+
+Prec: 0.5500
+
+Rec: 0.5499
+
+F1: 0.5500
+
+AUROC: 0.5439
+
+Ottimizzazioni step 2:
+
+- normalizzazione della matrice di adiacenza per evitare l'esplosione del gradiente (aggiunta di nodo fittizio che è collegato a tutti i inodi, in questo modo tutti i nodi distano massimo due hop)
+- modifica del forward pass per utilizzare il virtual node per la classificazione finale
 
 ## Acknowledgements
 

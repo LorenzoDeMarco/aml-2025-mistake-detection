@@ -57,19 +57,29 @@ def load_graph_data(visual_npz, text_npz, annotations_file):
             
             num_nodes = t_feats.shape[0]
             
-            # Creation of the adjacency matrix (Identity + Sequential Edges)
-            # Add self-loops (the diagonal) to prevent a node from forgetting itself during message passing
-            adj = torch.eye(num_nodes).to(device)
+            # Create a Virtual Node feature (initialized as the mean of text features)
+            virtual_feat = t_feats.mean(dim=0, keepdim=True)
+            t_feats_extended = torch.cat([t_feats, virtual_feat], dim=0)
+            
+            num_nodes_total = num_nodes + 1
+            adj = torch.eye(num_nodes_total).to(device)
+            
+            # Sequential bidirectional edges for real steps
             for i in range(num_nodes - 1):
-                adj[i, i+1] = 1.0  # Forward edge (from step i to step i+1)
-                adj[i+1, i] = 1.0  # Backward edge (from step i+1 to step i)
+                adj[i, i+1] = 1.0 
+                adj[i+1, i] = 1.0 
+                
+            # Connect the Virtual Node (last index) to all real nodes
+            for i in range(num_nodes):
+                adj[i, -1] = 1.0 # Edge from real node to virtual node
+                adj[-1, i] = 1.0 # Edge from virtual node to real node
             
             y = recipe_labels.get(rec_id, 0)
             
             dataset.append({
                 'id': rec_id,
                 'v': v_feats,
-                't': t_feats,
+                't': t_feats_extended, # Use extended features
                 'adj': adj,
                 'y': torch.tensor(y, dtype=torch.float32).to(device)
             })

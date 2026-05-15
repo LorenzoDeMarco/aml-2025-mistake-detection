@@ -27,28 +27,37 @@ class GraphClassifier(nn.Module):
         """
         Args:
             visual_feats: (Num_Visual, 768)
-            text_feats: (Num_Nodes, 256)
-            adj_matrix: (Num_Nodes, Num_Nodes) - 1 where edge exists
+            text_feats:   (Num_Nodes + 1, 256) # Includes Virtual Node
+            adj_matrix:   (Num_Nodes + 1, Num_Nodes + 1)
         """
+        # Exclude the virtual node from the visual matching process
+        real_text_feats = text_feats[:-1, :]
+        virtual_feat = text_feats[-1:, :]
         
-        # Cross-modal features update
-        update_nodes, _, _ = self.matcher(visual_feats, text_feats)
+        update_nodes, _, _ = self.matcher(visual_feats, real_text_feats)
         
-        x = update_nodes
+        # Re-attach the virtual node to the updated graph
+        x = torch.cat([update_nodes, virtual_feat], dim=0)
+        
+        # Prevents feature explosion for nodes with many connections (like the Virtual Node)
+        degree = adj_matrix.sum(dim=-1, keepdim=True)
+        adj_normalized = adj_matrix / degree
+        
+        # Message Passing Loop
         for layer in self.gnn_layers:
             support = layer(x)
             
-            x_aggregated = torch.matmul(adj_matrix, support)
+            # Use the normalized adjacency matrix for routing
+            x_aggregated = torch.matmul(adj_normalized, support)
             
-            # Apply activation, normalization, and dropout
             x = F.relu(x_aggregated)
             x = self.norm(x)
             x = self.dropout(x)
             
-        # Global Graph Readout (Max Pooling to capture localized anomalies)
-        graph_rep, _ = torch.max(x, dim=0)
+        # Global Graph Readout via Virtual Node
+        # Instead of Max/Mean pooling, extract the feature vector of the Virtual Node
+        # which has automatically collected global context from the entire recipe.
+        graph_rep = x[-1] 
         
-        # Final Classification
         logits = self.classifier(graph_rep)
-        
         return logits
