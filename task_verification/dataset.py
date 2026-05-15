@@ -21,19 +21,19 @@ class TaskVerificationDataset(Dataset):
 
     def apply_augmentation(self, feat):
         # gaussian noise
-        if np.random.rand() > 0.5:
-            noise = np.random.normal(0, 0.02, feat.shape)
+        if np.random.rand() > 0.4:
+            noise = np.random.normal(0, 0.05, feat.shape)
             feat = feat + noise
 
         # step dropout
-        if np.random.rand() > 0.5:
+        if np.random.rand() > 0.4:
             # mask about 10% of the steps
-            mask = np.random.rand(feat.shape[0], 1) > 0.1
+            mask = np.random.rand(feat.shape[0], 1) > 0.2
             feat = feat * mask
 
         # jittering (Feature Scaling)
-        if np.random.rand() > 0.5:
-            scale_factor = np.random.uniform(0.9, 1.1)
+        if np.random.rand() > 0.4:
+            scale_factor = np.random.uniform(0.85, 1.15)
             feat = feat * scale_factor
             
         return feat

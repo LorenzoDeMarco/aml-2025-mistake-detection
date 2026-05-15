@@ -127,13 +127,12 @@ def train_loo(npz_path, annotations_path):
     # wandb table
     final_run = wandb.init(project="Mistake-Detection-LOO-Final", name="Final_Metrics_Summary")
     error_table = wandb.Table(dataframe=results_df)
+
+    # Log Confusion Matrix
     wandb.log({
-        "Final_Accuracy": acc,
-        "Final_Precision": prec,
-        "Final_Recall": rec,
-        "Final_F1": f1,
-        "Final_AUROC": auroc,
-        "Error_Analysis_Table": error_table
+        "Final_Acc": acc, "Final_F1": f1, "Final_Prec": prec, "Final_Rec": rec, "Final_AUROC": auroc,
+        "conf_mat": wandb.plot.confusion_matrix(probs=None, y_true=all_ground_truths, preds=all_predictions, class_names=["Correct", "Error"]),
+        "error_analysis_table": error_table
     })
     final_run.finish()
 
