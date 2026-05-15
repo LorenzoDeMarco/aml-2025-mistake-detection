@@ -6,10 +6,30 @@ import numpy as np
 import argparse
 import warnings
 from sklearn.model_selection import LeaveOneGroupOut
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from core.models.graph_model import GraphClassifier
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+def evaluate_metrics(y_true, y_pred, y_scores=None, average='macro') -> dict:
+    """
+    Computes multiple classification metrics to evaluate the global performance.
+    """
+    metrics = {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "precision": precision_score(y_true, y_pred, average=average, zero_division=0),
+        "recall": recall_score(y_true, y_pred, average=average, zero_division=0),
+        "f1_score": f1_score(y_true, y_pred, average=average, zero_division=0)
+    }
+    
+    # Compute AUROC only if probabilities are provided
+    if y_scores is not None:
+        try:
+            metrics["auroc"] = roc_auc_score(y_true, y_scores, multi_class='ovr', average=average)
+        except ValueError:
+            metrics["auroc"] = float('nan')
+            
+    return metrics
 
 def load_graph_data(visual_npz, text_npz, annotations_file):
     print("Loading visual and textual features...")
@@ -41,7 +61,8 @@ def load_graph_data(visual_npz, text_npz, annotations_file):
             # Add self-loops (the diagonal) to prevent a node from forgetting itself during message passing
             adj = torch.eye(num_nodes).to(device)
             for i in range(num_nodes - 1):
-                adj[i, i+1] = 1.0 
+                adj[i, i+1] = 1.0  # Forward edge (from step i to step i+1)
+                adj[i+1, i] = 1.0  # Backward edge (from step i+1 to step i)
             
             y = recipe_labels.get(rec_id, 0)
             
@@ -61,6 +82,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
     logo = LeaveOneGroupOut()
     all_preds = []
     all_targets = []
+    all_scores = []
     
     indices = np.arange(len(dataset))
     
@@ -93,9 +115,9 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
             np.random.shuffle(train_idx)
             
             epoch_loss = 0.0
-            optimizer.zero_grad()
             
             for idx in train_idx:
+                optimizer.zero_grad()
                 sample = dataset[idx]
                 
                 # Forward pass: add a batch dimension of 1 using .view(1)
@@ -110,9 +132,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
                 
                 epoch_loss += loss.item()
                 
-            # Update weights once the entire epoch is passed (Full-batch Gradient Descent)
-            # This stabilizes learning on small datasets
-            optimizer.step()
+                optimizer.step()
             
         # Evaluation
         model.eval()
@@ -120,19 +140,30 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
             test_sample = dataset[test_idx[0]]
             test_logits = model(test_sample['v'], test_sample['t'], test_sample['adj'])
             
-            pred = (torch.sigmoid(test_logits) >= 0.5).float().item()
+            prob = torch.sigmoid(test_logits).item()
+            
+            pred = 1.0 if prob >= 0.5 else 0.0
             target = test_sample['y'].item()
             
             all_preds.append(pred)
             all_targets.append(target)
+            all_scores.append(prob)
             
             res_str = "CORRECT" if pred == target else "WRONG"
-            print(f"Pred: {pred} | True: {target} [{res_str}]")
+            print(f"    Target: {int(target)} | Prediction: {int(pred)} | {res_str}")
             
-    # Final accuracy
-    total_acc = accuracy_score(all_targets, all_preds)
-    print(f"--> Global GNN (Substep 4) Accuracy: {total_acc:.4f}")
-
+    # Global evaluation
+    total_metrics = evaluate_metrics(np.array(all_targets), np.array(all_preds), y_scores=np.array(all_scores))
+    
+    print(f"""
+Global GNN (Substep 4) LOGO Results ->
+    Acc:   {total_metrics['accuracy']:.4f}
+    Prec:  {total_metrics['precision']:.4f}
+    Rec:   {total_metrics['recall']:.4f}
+    F1:    {total_metrics['f1_score']:.4f}
+    AUROC: {total_metrics['auroc']:.4f}""")
+    
+    
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-step Action Graph Neural Network")
     parser.add_argument("--visual_npz", type=str, required=True, help="Path to visual step embeddings")

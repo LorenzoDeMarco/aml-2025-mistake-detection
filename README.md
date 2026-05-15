@@ -322,6 +322,13 @@ The integration of these modifications resolved the mode collapse phenomenon, al
 | **Activation Explosion** | Node feature normalization (`nn.LayerNorm`)          | Graph Message Passing               |
 | **Class Imbalance**      | Dynamic`pos_weight`calculation with`.view(1)`        | Loss Function (`BCEWithLogitsLoss`) |
 
+Migliorie da segnare:
+
+- INTRODUZIONE DROPOUT IN GNN
+- MAX POOLING READOUT AL POSTO DI MEDIA IN FROWARD STEP
+- OTTIMIZZAZIONE DEL GRADIENTE PER OGNI GRAFO E NON A OGNI EPOCA
+- BACKWORD STEP NEL GRAFO AGGIUNTO
+
 ## Acknowledgements
 
 This project builds on many repositories from the CaptainCook4D release. Please refer to the original codebases for more details.

@@ -7,8 +7,39 @@ import numpy as np
 import torch.optim as optim
 from torch.nn.utils.rnn import pad_sequence
 from sklearn.model_selection import LeaveOneGroupOut
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from core.models.task_verification import TaskVerificationTransformer
+
+def evaluate_metrics(y_true: np.ndarray, y_pred: np.ndarray, y_scores: np.ndarray = None, average: str = 'macro') -> dict:
+    """
+    Computes multiple classification metrics to evaluate a training/validation fold.
+    
+    Args:
+        y_true: Ground truth array.
+        y_pred: Predicted class indices.
+        y_scores: Predicted probabilities (optional, required only for AUROC).
+        average: Averaging strategy for multiclass ('macro', 'micro', 'weighted').
+        
+    Returns:
+        A dictionary containing the computed metrics.
+    """
+    metrics = {
+        "accuracy": accuracy_score(y_true, y_pred),
+        "precision": precision_score(y_true, y_pred, average=average, zero_division=0),
+        "recall": recall_score(y_true, y_pred, average=average, zero_division=0),
+        "f1_score": f1_score(y_true, y_pred, average=average, zero_division=0)
+    }
+    
+    # Compute AUROC only if probabilities are provided
+    if y_scores is not None:
+        try:
+            # multi_class='ovr' handles multiclass AUROC (One-vs-Rest)
+            metrics["auroc"] = roc_auc_score(y_true, y_scores, multi_class='ovr', average=average)
+        except ValueError:
+            # Handles edge cases where a fold might miss some classes
+            metrics["auroc"] = float('nan')
+            
+    return metrics
 
 def load_task_verification_data(npz_file, annotations_file):
     # Load the pre-extracted step-level EgoVLP embeddings
@@ -55,6 +86,7 @@ def train_leave_one_out(X, y, groups, mask, input_dim, num_epochs=15):
     logo = LeaveOneGroupOut()
     all_preds = []
     all_targets = []
+    all_scores = []
     
     indices = np.arange(len(y))
     
@@ -87,20 +119,31 @@ def train_leave_one_out(X, y, groups, mask, input_dim, num_epochs=15):
         with torch.no_grad():
             test_logits = model(X_test, mask=mask_test)
             
+            probs = torch.sigmoid(test_logits)
+            
             # Apply Sigmoid activation and threshold at 0.5 for binary classification
-            preds = torch.sigmoid(test_logits) >= 0.5
+            preds = probs >= 0.5
             
             # Store predictions and ground truths for global metric calculation
             all_preds.extend(preds.cpu().numpy())
             all_targets.extend(y_test.cpu().numpy())
+            all_scores.extend(probs.cpu().numpy())
             
-            fold_acc = accuracy_score(y_test.cpu().numpy(), preds.cpu().numpy())
-            print(f"Fold Accuracy: {fold_acc:.4f}")
-            
-    # Calculate the overall accuracy across the entire dataset after the Leave-One-Out procedure
-    total_acc = accuracy_score(all_targets, all_preds)
-    print(f"\n--> Global Leave-One-Out Accuracy: {total_acc:.4f}")
-
+            target_val = int(y_test.item())
+            pred_val = int(preds.item())
+            print(f"    Target: {target_val} | Prediction: {pred_val} | Correct: {target_val == pred_val}")
+    
+    total_metrics = evaluate_metrics(all_targets, all_preds, y_scores=all_scores)
+    
+    # Removed excessive indentation inside the triple quotes to avoid formatting issues in the terminal
+    print(f"""Global Leave One Out results ->
+    Acc:   {total_metrics['accuracy']:.4f}
+    Prec:  {total_metrics['precision']:.4f}
+    Rec:   {total_metrics['recall']:.4f}
+    F1:    {total_metrics['f1_score']:.4f}
+    AUROC: {total_metrics['auroc']:.4f}""")
+    
+    
 if __name__ == "__main__":
     # Command line arguments parser
     parser = argparse.ArgumentParser(description="Task Verification Baseline")
