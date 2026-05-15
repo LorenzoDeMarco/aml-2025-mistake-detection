@@ -73,4 +73,4 @@ def train_loo(npz_path, annotations_path):
     print(f"Final LOO Accuracy: {np.mean(results):.4f}")
 
 if __name__ == "__main__":
-    train_loo('step_embeddings_dataset.npz', 'complete_step_annotations.json')
+    train_loo('step_embeddings_dataset.npz', 'annotations/annotation_json/complete_step_annotations.json')
