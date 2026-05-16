@@ -7,6 +7,7 @@ import json
 import wandb
 import random
 import pandas as pd
+import time
 from torch.utils.data import DataLoader
 from sklearn.model_selection import LeaveOneOut
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, roc_auc_score
@@ -121,15 +122,41 @@ def train_loo(npz_path, annotations_path):
         pos_weight_val = num_correct / num_errors
         criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(device))
 
+        #gradient clipping 
+        max_grad_norm = 1.0
+        start_time = time.time()
+
         # training
         for epoch in range(c.epochs):
             model.train()
+            epoch_loss = 0.0
+            total_grad_norm = 0.0
+            num_batches = len(train_loader)
+
             for batch in train_loader:
                 feats, labels, masks = batch['features'].to(device), batch['label'].to(device).float(), batch['mask'].to(device)
                 optimizer.zero_grad()
                 loss = criterion(model(feats, masks), labels)
                 loss.backward()
+                grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=max_grad_norm)
+                total_grad_norm += grad_norm.item()
                 optimizer.step()
+                epoch_loss += loss.item()
+
+            avg_epoch_loss = epoch_loss / num_batches
+            avg_grad_norm = total_grad_norm / num_batches
+            current_lr = optimizer.param_groups[0]['lr']
+            
+            # Inviati a Wandb all'interno della run del singolo fold
+            wandb.log({
+                "epoch/train_loss": avg_epoch_loss, 
+                "epoch/grad_norm": avg_grad_norm,
+                "epoch/learning_rate": current_lr,
+                "epoch/epoch_step": epoch
+            })
+
+            if epoch % 10 == 0 or epoch == c.epochs - 1:
+                print(f"  [Fold {fold}] Epoch {epoch}/{c.epochs} - Loss: {avg_epoch_loss:.4f} | Grad Norm: {avg_grad_norm:.2f}", flush=True)
 
         # evaluation
         model.eval()
@@ -145,8 +172,19 @@ def train_loo(npz_path, annotations_path):
             all_predictions.append(pred)
             all_ground_truths.append(gt)
             all_probs.append(prob)
+
+        elapsed_time = time.time() - start_time
+        
+        #running acc for each fold 
+        running_acc = accuracy_score(all_ground_truths, all_predictions)
             
-        wandb.log({"fold_correct": int(pred == gt), "video_id": current_video})
+        wandb.log({
+            "fold_correct": int(pred == gt), 
+            "video_id": current_video,
+            "telemetry/fold_execution_time_sec": elapsed_time,
+            "telemetry/running_global_accuracy": running_acc
+        })
+        
         run.finish()
 
         df_progress = pd.DataFrame({
