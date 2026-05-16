@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -14,28 +15,27 @@ from task_verification.dataset import TaskVerificationDataset
 from task_verification.transformer import TaskVerificationTransformer
 
 def dynamic_collate_fn(batch):
-        features = [item['features'] for item in batch]
-        labels = [item['label'] for item in batch]
-        video_ids = [item['video_id'] for item in batch]
+    features = [item['features'] for item in batch]
+    labels = [item['label'] for item in batch]
+    video_ids = [item['video_id'] for item in batch]
+
+    # pad sequences dynamically to the maximum length in this specific batch
+    padded_features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True, padding_value=0.0)
+
+    # attention masks generated dynamically
+    batch_size, max_len, _ = padded_features.shape
+    masks = torch.zeros((batch_size, max_len), dtype=torch.float32)
+
+    for i, feat in enumerate(features):
+        actual_len = feat.shape[0]
+        masks[i, :actual_len] = 1.0  # 1.0 for real data, 0.0 for padding
     
-        # pad sequences dynamically to the maximum length in this specific batch
-        # output shape: [batch_size, max_len_of_this_batch, 768]
-        padded_features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True, padding_value=0.0)
-    
-        #attention masks generatede dynamically
-        batch_size, max_len, _ = padded_features.shape
-        masks = torch.zeros((batch_size, max_len), dtype=torch.float32)
-    
-        for i, feat in enumerate(features):
-            actual_len = feat.shape[0]
-            masks[i, :actual_len] = 1.0  # 1.0 for real data, 0.0 for padding
-        
-        return {
-            'features': padded_features,
-            'label': torch.tensor(labels, dtype=torch.long),
-            'mask': masks,
-            'video_id': video_ids
-        }
+    return {
+        'features': padded_features,
+        'label': torch.tensor(labels, dtype=torch.long),
+        'mask': masks,
+        'video_id': video_ids
+    }
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -54,18 +54,38 @@ def train_loo(npz_path, annotations_path):
     
     loo = LeaveOneOut()
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    group_id = wandb.util.generate_id()
     
-    all_vids = []
-    all_predictions = []
-    all_ground_truths = []
-    all_probs = [] #auroc
+    # --- checkpoint/resume logic ---
+    progress_file = 'loo_progress.csv'
+    if os.path.exists(progress_file):
+        print(f"Found existing progress file '{progress_file}'. Resuming from checkpoint...", flush=True)
+        df_progress = pd.read_csv(progress_file)
+        all_vids = df_progress['video_id'].tolist()
+        all_predictions = df_progress['prediction'].tolist()
+        all_ground_truths = df_progress['ground_truth'].tolist()
+        all_probs = df_progress['probability'].tolist()
+        completed_videos = set(all_vids)
+        
+        group_id = df_progress['group_id'].iloc[0] if 'group_id' in df_progress.columns else wandb.util.generate_id()
+    else:
+        print("No progress file found. Starting a fresh Leave-One-Out run...", flush=True)
+        all_vids = []
+        all_predictions = []
+        all_ground_truths = []
+        all_probs = []
+        completed_videos = set()
+        group_id = wandb.util.generate_id()
 
-    print(f"Starting Leave-One-Out on {len(video_ids)} videos...")
+    print(f"Starting Leave-One-Out on {len(video_ids)} videos...", flush=True)
 
     for fold, (train_idx, test_idx) in enumerate(loo.split(video_ids)):
         train_vids, test_vids = video_ids[train_idx], video_ids[test_idx]
         current_video = test_vids[0]
+        
+        if current_video in completed_videos:
+            continue
+            
+        print(f"Processing Fold {fold}/{len(video_ids)} - Video: {current_video}", flush=True)
         
         run = wandb.init(
             project="Mistake-Detection-LOO-Final",
@@ -95,7 +115,7 @@ def train_loo(npz_path, annotations_path):
 
         optimizer = optim.AdamW(model.parameters(), lr=c.learning_rate, weight_decay=1e-4)
 
-        #pos weight
+        # pos weight balanced loss layer
         num_errors = 220    # Classe 1
         num_correct = 164   # Classe 0
         pos_weight_val = num_correct / num_errors
@@ -117,7 +137,7 @@ def train_loo(npz_path, annotations_path):
             batch = next(iter(test_loader))
             logits = model(batch['features'].to(device), batch['mask'].to(device))
             
-            prob = torch.sigmoid(logits).item() #auroc
+            prob = torch.sigmoid(logits).item() # auroc
             pred = 1 if prob > 0.5 else 0
             gt = batch['label'].item()
             
@@ -129,10 +149,19 @@ def train_loo(npz_path, annotations_path):
         wandb.log({"fold_correct": int(pred == gt), "video_id": current_video})
         run.finish()
 
-        if fold % 10 == 0:
-            print(f"Completed fold {fold}/{len(video_ids)}...")
+        df_progress = pd.DataFrame({
+            'video_id': all_vids,
+            'ground_truth': all_ground_truths,
+            'prediction': all_predictions,
+            'probability': all_probs,
+            'group_id': [group_id] * len(all_vids)
+        })
+        df_progress.to_csv(progress_file, index=False)
 
-    # --- FINAL METRICS ---
+        if fold % 10 == 0:
+            print(f"Completed fold {fold}/{len(video_ids)}... Running Acc: {accuracy_score(all_ground_truths, all_predictions):.4f}", flush=True)
+
+    # --- FINAL METRICS  ---
     acc = accuracy_score(all_ground_truths, all_predictions)
     prec = precision_score(all_ground_truths, all_predictions)
     rec = recall_score(all_ground_truths, all_predictions)
@@ -142,8 +171,7 @@ def train_loo(npz_path, annotations_path):
     print(f"\n--- FINAL RESULTS LOO ---")
     print(f"Acc: {acc:.4f} | Prec: {prec:.4f} | Rec: {rec:.4f} | F1: {f1:.4f} | AUROC: {auroc:.4f}")
 
-    # --- Error Analysis ---
-    #csv
+    # save final error analysis report
     results_df = pd.DataFrame({
         'video_id': all_vids,
         'ground_truth': all_ground_truths,
@@ -151,13 +179,13 @@ def train_loo(npz_path, annotations_path):
         'probability': all_probs,
         'is_correct': np.array(all_predictions) == np.array(all_ground_truths)
     })
-    results_df.to_csv('loo_error_analysis.csv', index=False)
+    results_df.to_csv('loo_error_analysis_final.csv', index=False)
 
     # wandb table
     final_run = wandb.init(project="Mistake-Detection-LOO-Final", name="Final_Metrics_Summary")
     error_table = wandb.Table(dataframe=results_df)
 
-    # Log Confusion Matrix
+    # log confusion matrix
     wandb.log({
         "Final_Acc": acc, "Final_F1": f1, "Final_Prec": prec, "Final_Rec": rec, "Final_AUROC": auroc,
         "conf_mat": wandb.plot.confusion_matrix(probs=None, y_true=all_ground_truths, preds=all_predictions, class_names=["Correct", "Error"]),
