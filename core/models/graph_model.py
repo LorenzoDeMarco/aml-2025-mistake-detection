@@ -105,13 +105,16 @@ class GraphClassifier(nn.Module):
             attention_scores = self.attention_layers[i](attention_input).squeeze(-1)
             attention_scores = F.leaky_relu(attention_scores, negative_slope=0.2)
             
-            # CRITICAL MASKING step: Set dummy positions and non-edges to -inf
-            # Padded entries have an adjacency coordinate of 0.0, filtering them out instantly
-            zero_mask = -9e15 * torch.ones_like(attention_scores)
+            # Use -10000.0 instead of -9e15. 
+            # -9e15 overflows float16 limits causing -inf and subsequent NaNs in Softmax.
+            zero_mask = -10000.0 * torch.ones_like(attention_scores)
             attention_scores = torch.where(adj_matrix > 0, attention_scores, zero_mask)
             
             # Softmax assigns exactly 0.0 weight to the masked fictitious nodes
             attention_weights = F.softmax(attention_scores, dim=-1)
+            
+            # Safety net: explicitly convert any stray NaNs to 0.0 before matrix multiplication
+            attention_weights = torch.nan_to_num(attention_weights, nan=0.0)
             
             # Batched Matrix Multiplication to route the representations
             x_aggregated = torch.bmm(attention_weights, support)

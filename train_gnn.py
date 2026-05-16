@@ -65,6 +65,11 @@ def collate_graph_batch(batch):
         # Virtual self-loop
         batched_adj[i, -1, -1] = sample['adj'][-1, -1]
         
+        # Add self-loops to padding nodes
+        # If a row is entirely 0, Softmax computes exp(-inf)/0 = NaN. Self-loops prevent this.
+        for pad_idx in range(num_real, max_real_nodes):
+            batched_adj[i, pad_idx, pad_idx] = 1.0
+        
         # Assign the target label
         batched_y[i] = sample['y']
         
