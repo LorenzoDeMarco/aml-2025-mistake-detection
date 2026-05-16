@@ -346,6 +346,27 @@ Ottimizzazioni step 2:
 - normalizzazione della matrice di adiacenza per evitare l'esplosione del gradiente (aggiunta di nodo fittizio che è collegato a tutti i inodi, in questo modo tutti i nodi distano massimo due hop)
 - modifica del forward pass per utilizzare il virtual node per la classificazione finale
 
+risultati:
+Acc:   0.5911
+Prec:  0.5810
+Rec:   0.5803
+F1:    0.5806
+AUROC: 0.5851
+
+
+Migliorie 3:
+
+
+* **Fix Gradient Scaling (Training Loop):**
+  * *Modifica:* Spostato `optimizer.step()` a fine epoca per implementare una vera Gradient Accumulation (Full-Batch).
+  * *Obiettivo:* Evitare gradienti microscopici e stabilizzare l'apprendimento.
+* **Graph Positional Encoding:**
+  * *Modifica:* Aggiunta codifica posizionale (sen/cos) alle feature dei nodi reali prima del Message Passing.
+  * *Obiettivo:* Rompere la *permutation invariance* e fornire alla rete l'ordine temporale degli step della ricetta.
+* **Transizione a Graph Attention (GAT):**
+  * *Modifica:* Sostituita la GCN standard con layer di Self-Attention per il calcolo dinamico dei pesi degli archi.
+  * *Obiettivo:* Permettere al modello di pesare diversamente i nodi vicini (incluso il Virtual Node) in base al contesto, superando i limiti del Transformer.
+
 ## Acknowledgements
 
 This project builds on many repositories from the CaptainCook4D release. Please refer to the original codebases for more details.

@@ -125,9 +125,9 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
             np.random.shuffle(train_idx)
             
             epoch_loss = 0.0
+            optimizer.zero_grad()
             
             for idx in train_idx:
-                optimizer.zero_grad()
                 sample = dataset[idx]
                 
                 # Forward pass: add a batch dimension of 1 using .view(1)
@@ -142,7 +142,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15):
                 
                 epoch_loss += loss.item()
                 
-                optimizer.step()
+            optimizer.step()
             
         # Evaluation
         model.eval()
