@@ -105,7 +105,7 @@ def load_graph_data(visual_npz, text_npz, annotations_file):
     with open(annotations_file, 'r') as f:
         error_annotations = json.load(f)
         
-    # Exact label mapping as in Substep 2
+    # Exact label mapping
     recipe_labels = {}
     for recording in error_annotations:
         rec_id = recording['recording_id']
@@ -118,17 +118,19 @@ def load_graph_data(visual_npz, text_npz, annotations_file):
     
     for rec_id in v_data.files:
         if rec_id in t_data:
-            v_feats = torch.tensor(v_data[rec_id], dtype=torch.float32).to(device)
-            t_feats = torch.tensor(t_data[rec_id], dtype=torch.float32).to(device)
+            # keep tensors on CPU memory to allow multiprocessing
+            v_feats = torch.tensor(v_data[rec_id], dtype=torch.float32)
+            t_feats = torch.tensor(t_data[rec_id], dtype=torch.float32)
             
             num_nodes = t_feats.shape[0]
             
-            # Create a Virtual Node feature (initialized as the mean of text features)
+            # Create a Virtual Node feature
             virtual_feat = t_feats.mean(dim=0, keepdim=True)
             t_feats_extended = torch.cat([t_feats, virtual_feat], dim=0)
             
             num_nodes_total = num_nodes + 1
-            adj = torch.eye(num_nodes_total).to(device)
+            # Keep adjacency matrix on CPU
+            adj = torch.eye(num_nodes_total)
             
             # Sequential bidirectional edges for real steps
             for i in range(num_nodes - 1):
@@ -145,9 +147,9 @@ def load_graph_data(visual_npz, text_npz, annotations_file):
             dataset.append({
                 'id': rec_id,
                 'v': v_feats,
-                't': t_feats_extended, # Use extended features
+                't': t_feats_extended,
                 'adj': adj,
-                'y': torch.tensor(y, dtype=torch.float32).to(device)
+                'y': torch.tensor(y, dtype=torch.float32)
             })
             groups.append(rec_id)
             labels.append(y)
@@ -187,7 +189,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             shuffle=True, 
             collate_fn=collate_graph_batch,
             pin_memory=True,
-            num_workers=4
+            num_workers=2
         )
         
         # Initialize a fresh model for each fold
@@ -198,7 +200,6 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             num_layers=num_layers, 
             dropout_prob=dropout
         ).to(device)
-        model = torch.compile(model) 
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         
