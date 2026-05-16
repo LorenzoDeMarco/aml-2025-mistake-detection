@@ -6,55 +6,69 @@ class TaskVerificationTransformer(nn.Module):
     def __init__(self, input_dim=768, embed_dim=256, num_heads=8, num_layers=4, dropout=0.3, max_seq_len=1050):
         super(TaskVerificationTransformer, self).__init__()
         
-        # 1.projection layer to reduce dimensionality from 768 to embed_dim
+        self.max_seq_len = max_seq_len
+        
+        # projection layer to reduce dimensionality from 768 to embed_dim
         self.input_proj = nn.Linear(input_dim, embed_dim)
         
-        # 2.positional encoding to inject sequence order information (important for task verification)
+        # learnable [CLS] token parameter (like in Bert, initialized randomly, optimized during training)
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        nn.init.normal_(self.cls_token, std=0.02)
+        
+        # positional encoding to inject sequence order information
         self.pos_encoder = PositionalEncoding(embed_dim, dropout, max_len=max_seq_len)
         
-        # 3. transformer encoder layers
+        # transformer encoder layers
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim, 
             nhead=num_heads, 
             dim_feedforward=embed_dim * 4, 
             dropout=dropout,
-            batch_first=True # [B, N, D] batch size, sequence leght (fixed at max_seq_len), embedding dimension 356 post linear projection
+            batch_first=True,
+            norm_first=True # pre-layer normalization for deeper training stability with long sequences
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
-        # 4. classification head (MLP)
+        # classification head (MLP)
         self.classifier = nn.Sequential(
             nn.Linear(embed_dim, embed_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(embed_dim // 2, 1) #binary classification so single logit output
+            nn.Linear(embed_dim // 2, 1) 
         )
         
     def forward(self, x, mask=None):
         """
-        x: [Batch_Size, Max_Seq_Len, 768]
-        mask: [Batch_Size, Max_Seq_Len] (1 per dati reali, 0 per padding)
+        x: [Batch_Size, Current_Batch_Max_Len, 768]
+        mask: [Batch_Size, Current_Batch_Max_Len] (1.0 for real data, 0.0 for padding)
         """
+        batch_size = x.size(0)
 
         x = self.input_proj(x) # [B, N, embed_dim]
+        
+        # prepend the [CLS] token to the sequence
+        # expand CLS token to match the current batch size: [B, 1, embed_dim]
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
+        # new sequence length becomes N + 1
+        x = torch.cat((cls_tokens, x), dim=1) # [B, N + 1, embed_dim]
+        
+        #applyy positional encoding (it dynamically handles N + 1 positions up to max_seq_len)
         x = self.pos_encoder(x)
         
-        #padding mask for transformer (True for positions that are padded and should be ignored)
-        src_key_padding_mask = (mask == 0) if mask is not None else None
-        
-        output = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask)
-        
-        # Global Average Pooling include only valid positions (mask == 1)
+        # adjust the attention mask to account for the prepended [CLS] token that should not be masked
         if mask is not None:
-            # Masked Mean Pooling
-            mask_expanded = mask.unsqueeze(-1).expand_as(output)
-            sum_embeddings = torch.sum(output * mask_expanded, dim=1)
-            mean_pooled = sum_embeddings / torch.clamp(torch.sum(mask, dim=1, keepdim=True), min=1e-9)
+            cls_mask = torch.ones((batch_size, 1), dtype=mask.dtype, device=mask.device)
+            extended_mask = torch.cat((cls_mask, mask), dim=1) # [B, N + 1]
+            src_key_padding_mask = (extended_mask == 0)
         else:
-            mean_pooled = torch.mean(output, dim=1)
+            src_key_padding_mask = None
+        
+        output = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask) # [B, N + 1, embed_dim]
+        
+        #output from the [CLS] token 
+        cls_output = output[:, 0, :] # [B, embed_dim]
             
-        # final classification 
-        logits = self.classifier(mean_pooled)
+        logits = self.classifier(cls_output)
         return logits.squeeze(-1)
 
 class PositionalEncoding(nn.Module):
