@@ -13,6 +13,30 @@ from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_sc
 from task_verification.dataset import TaskVerificationDataset
 from task_verification.transformer import TaskVerificationTransformer
 
+def dynamic_collate_fn(batch):
+        features = [item['features'] for item in batch]
+        labels = [item['label'] for item in batch]
+        video_ids = [item['video_id'] for item in batch]
+    
+        # pad sequences dynamically to the maximum length in this specific batch
+        # output shape: [batch_size, max_len_of_this_batch, 768]
+        padded_features = torch.nn.utils.rnn.pad_sequence(features, batch_first=True, padding_value=0.0)
+    
+        #attention masks generatede dynamically
+        batch_size, max_len, _ = padded_features.shape
+        masks = torch.zeros((batch_size, max_len), dtype=torch.float32)
+    
+        for i, feat in enumerate(features):
+            actual_len = feat.shape[0]
+            masks[i, :actual_len] = 1.0  # 1.0 for real data, 0.0 for padding
+        
+        return {
+            'features': padded_features,
+            'label': torch.tensor(labels, dtype=torch.long),
+            'mask': masks,
+            'video_id': video_ids
+        }
+
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -49,28 +73,33 @@ def train_loo(npz_path, annotations_path):
             name=f"fold_{fold}_{current_video}",
             reinit=True,
             config={
-                "learning_rate": 1e-3,
+                "learning_rate": 1e-4,
                 "dropout": 0.3,
                 "embed_dim": 128,
                 "num_layers": 4,
                 "num_heads": 4,
                 "batch_size": 16,
-                "epochs": 20
+                "epochs": 30
             }
         )
         c = wandb.config
 
         train_ds = TaskVerificationDataset(npz_path, annotations_path, train_vids, split='train')
         test_ds = TaskVerificationDataset(npz_path, annotations_path, test_vids, split='test')
-        train_loader = DataLoader(train_ds, batch_size=c.batch_size, shuffle=True)
-        test_loader = DataLoader(test_ds, batch_size=1)
+        train_loader = DataLoader(train_ds, batch_size=c.batch_size, shuffle=True, collate_fn=dynamic_collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=dynamic_collate_fn)
 
         model = TaskVerificationTransformer(
-            input_dim=768, embed_dim=c.embed_dim, num_layers=c.num_layers, num_heads=c.num_heads, dropout=c.dropout
+            input_dim=768, embed_dim=c.embed_dim, num_layers=c.num_layers, num_heads=c.num_heads, dropout=c.dropout, max_len=1050
         ).to(device)
 
         optimizer = optim.AdamW(model.parameters(), lr=c.learning_rate, weight_decay=1e-4)
-        criterion = nn.BCEWithLogitsLoss()
+
+        #pos weight
+        num_errors = 220    # Classe 1
+        num_correct = 164   # Classe 0
+        pos_weight_val = num_correct / num_errors
+        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(device))
 
         # training
         for epoch in range(c.epochs):

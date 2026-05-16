@@ -6,10 +6,9 @@ import torch
 from torch.utils.data import Dataset
 
 class TaskVerificationDataset(Dataset):
-    def __init__(self, npz_path, annotations_path, video_ids, split='train', max_seq_len=100):
+    def __init__(self, npz_path, annotations_path, video_ids, split='train'):
         self.features = np.load(npz_path)
         self.split = split
-        self.max_seq_len = max_seq_len
         
         with open(annotations_path, 'r') as f:
             self.annotations = json.load(f)
@@ -46,22 +45,14 @@ class TaskVerificationDataset(Dataset):
         if self.split == 'train':
             feat = self.apply_augmentation(feat)
         
-        seq_len = feat.shape[0]
         has_error = any(step.get('has_errors', False) for step in self.annotations[video_id].get('steps', []))
         label = 1 if has_error else 0
         
-        # Padding logic
-        padded_feat = np.zeros((self.max_seq_len, 768), dtype=np.float32)
-        actual_len = min(seq_len, self.max_seq_len)
-        padded_feat[:actual_len, :] = feat[:actual_len, :]
-        
-        mask = np.zeros(self.max_seq_len, dtype=np.float32)
-        mask[:actual_len] = 1.0
         
         return {
-            'features': torch.tensor(padded_feat),
+            'features': torch.tensor(feat),
             'label': torch.tensor(label, dtype=torch.long),
-            'mask': torch.tensor(mask),
             'video_id': video_id
         }
+    
 
