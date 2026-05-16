@@ -66,7 +66,7 @@ def train_loo(npz_path, annotations_path):
         completed_videos = set(all_vids)
         group_id = df_progress['group_id'].iloc[0] if 'group_id' in df_progress.columns else wandb.util.generate_id()
     else:
-        print("No progress file found. Starting a fresh optimized LOO run...", flush=True)
+        print("No progress file found. Starting a LOO run...", flush=True)
         all_vids, all_predictions, all_ground_truths, all_probs = [], [], [], []
         completed_videos = set()
         group_id = wandb.util.generate_id()
@@ -86,7 +86,7 @@ def train_loo(npz_path, annotations_path):
         fold_start_time = time.time()
         
         run = wandb.init(
-            project="Mistake-Detection-LOO-Optimized",
+            project="Mistake-Detection-LOO",
             group=group_id,
             name=f"fold_{fold}_{current_video}",
             reinit=True,
@@ -114,14 +114,12 @@ def train_loo(npz_path, annotations_path):
         optimizer = optim.AdamW(model.parameters(), lr=c.learning_rate, weight_decay=1e-2)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=c.epochs, eta_min=1e-6)
 
-        #loss setup with class imbalance handling and label smoothing
+        #loss setup with class imbalance handling
         pos_weight_val = 164.0 / 220.0
-        criterion = nn.BCEWithLogitsLoss(
-            pos_weight=torch.tensor([pos_weight_val]).to(device),
-            label_smoothing=0.1
-        )
+        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(device))
 
-        # training loop with mixed precision
+        # training loop with mixed precision and label smoothing
+        label_smoothing = 0.1
         for epoch in range(c.epochs):
             model.train()
             epoch_loss = 0.0
@@ -131,15 +129,18 @@ def train_loo(npz_path, annotations_path):
                 labels = batch['label'].to(device).float()
                 masks = batch['mask'].to(device)
                 
+                # label smoothin [0.1, 0.9] to prevent overconfidence and improve generalization
+                smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
                 optimizer.zero_grad()
                 
                 #forwardexecution enclosed inside AMP autocast
                 with torch.cuda.amp.autocast():
                     logits = model(feats, masks)
-                    loss = criterion(logits, labels)
+                    loss = criterion(logits, smoothed_labels)
                 
                 scaler.scale(loss).backward()
                 
+                #before clippint to prevent Nan injections
                 scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
@@ -199,7 +200,7 @@ def train_loo(npz_path, annotations_path):
     f1 = f1_score(all_ground_truths, all_predictions)
     auroc = roc_auc_score(all_ground_truths, all_probs)
 
-    print(f"\n--- FINAL CONSOLIDATED RESULTS ---")
+    print(f"\n--- FINAL RESULTS ---")
     print(f"Acc: {acc:.4f} | Prec: {prec:.4f} | Rec: {rec:.4f} | F1: {f1:.4f} | AUROC: {auroc:.4f}")
 
     results_df = pd.DataFrame({
@@ -211,7 +212,7 @@ def train_loo(npz_path, annotations_path):
     })
     results_df.to_csv('loo_error_analysis_final.csv', index=False)
 
-    final_run = wandb.init(project="Mistake-Detection-LOO-Optimized", name="GLOBAL_METRICS_SUMMARY")
+    final_run = wandb.init(project="Mistake-Detection-LOO", name="GLOBAL_METRICS_SUMMARY")
     error_table = wandb.Table(dataframe=results_df)
 
     wandb.log({
