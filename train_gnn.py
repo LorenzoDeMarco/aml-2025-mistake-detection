@@ -1,5 +1,10 @@
 import json
 import torch
+import torch._dynamo 
+
+# ADDED: Instructs Dynamo to natively capture scalar outputs (like tensor.sum())
+# This prevents Graph Breaks when dynamically slicing tensors based on sequence length
+torch._dynamo.config.capture_scalar_outputs = True
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
@@ -192,7 +197,11 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
         train_labels = [labels[i] for i in train_idx]
         num_pos = sum(train_labels)
         num_neg = len(train_labels) - num_pos
-        pos_weight_val = torch.tensor([num_neg / (num_pos + 1e-5)], dtype=torch.float32).to(device)
+        
+        # Apply a soft cap (e.g., maximum 2.0) to prevent the model from collapsing to predicting only 1s
+        raw_weight = num_neg / (num_pos + 1e-5)
+        soft_weight = min(raw_weight, 2.0)
+        pos_weight_val = torch.tensor([soft_weight], dtype=torch.float32).to(device)
         
         train_subdataset = Subset(dataset, train_idx)
         
@@ -314,4 +323,4 @@ if __name__ == "__main__":
         num_layers=args.num_layers,
         dropout=args.dropout,
         weight_decay=args.weight_decay
-    )
+)
