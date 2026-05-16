@@ -3,14 +3,14 @@ import torch.nn as nn
 import math
 
 class TaskVerificationTransformer(nn.Module):
-    def __init__(self, input_dim=768, embed_dim=256, num_heads=8, num_layers=4, dropout=0.3):
+    def __init__(self, input_dim=768, embed_dim=256, num_heads=8, num_layers=4, dropout=0.3, max_seq_len=1050):
         super(TaskVerificationTransformer, self).__init__()
         
         # 1.projection layer to reduce dimensionality from 768 to embed_dim
         self.input_proj = nn.Linear(input_dim, embed_dim)
         
         # 2.positional encoding to inject sequence order information (important for task verification)
-        self.pos_encoder = PositionalEncoding(embed_dim, dropout)
+        self.pos_encoder = PositionalEncoding(embed_dim, dropout, max_len=max_seq_len)
         
         # 3. transformer encoder layers
         encoder_layer = nn.TransformerEncoderLayer(
