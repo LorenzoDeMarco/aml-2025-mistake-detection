@@ -21,12 +21,11 @@ class TaskVerificationDataset(Dataset):
     def apply_augmentation(self, feat):
         # gaussian noise
         if np.random.rand() > 0.4:
-            noise = np.random.normal(0, 0.05, feat.shape)
+            noise = np.random.normal(0, 0.05, feat.shape).astype(np.float32)
             feat = feat + noise
 
         # step dropout
         if np.random.rand() > 0.4:
-            # mask about 10% of the steps
             mask = np.random.rand(feat.shape[0], 1) > 0.2
             feat = feat * mask
 
@@ -50,9 +49,8 @@ class TaskVerificationDataset(Dataset):
         
         
         return {
-            'features': torch.tensor(feat),
+            'features': torch.tensor(feat, dtype=torch.float32),
             'label': torch.tensor(label, dtype=torch.long),
             'video_id': video_id
         }
-    
 
