@@ -21,8 +21,9 @@ class PositionalEncoding(nn.Module):
         self.register_buffer('pe', pe)
         
     def forward(self, x):
-        seq_len = x.size(0)
-        return x + self.pe[:seq_len, :]
+        # x shape: (Batch_Size, Num_Real_Nodes, Feature_Dim)
+        seq_len = x.size(1)
+        return x + self.pe[:seq_len, :].unsqueeze(0)
 
 class GraphClassifier(nn.Module):
     def __init__(self, visual_dim=768, text_dim=256, hidden_dim=256, num_layers=2, dropout_prob=0.4):
@@ -31,6 +32,7 @@ class GraphClassifier(nn.Module):
         self.matcher = StepMatchingModule(visual_dim, text_dim, hidden_dim)
         self.pos_encoder = PositionalEncoding(d_model=text_dim)
         
+        # Graph Attention Layers (GAT-like for 3D batched tensors)
         self.attention_layers = nn.ModuleList([
             nn.Linear(text_dim * 2, 1) for _ in range(num_layers)
         ])
@@ -52,55 +54,60 @@ class GraphClassifier(nn.Module):
     def forward(self, visual_feats, text_feats, adj_matrix):
         """
         Args:
-            visual_feats: (Num_Visual, 768)
-            text_feats:   (Num_Nodes + 1, 256) # Includes Virtual Node
-            adj_matrix:   (Num_Nodes + 1, Num_Nodes + 1)
+            visual_feats: (Batch_Size, Max_Visual_Steps, 768)
+            text_feats:   (Batch_Size, Max_Nodes + 1, 256) # Includes Virtual Node
+            adj_matrix:   (Batch_Size, Max_Nodes + 1, Max_Nodes + 1)
         """
-        # Exclude the virtual node from the visual matching process
-        real_text_feats = text_feats[:-1, :]
-        virtual_feat = text_feats[-1:, :]
+        batch_size = text_feats.size(0)
+        num_total_nodes = text_feats.size(1)
         
-        # Apply Positional Encoding ONLY to the real sequential steps
+        # Slicing out real features and the virtual node tracking the absolute index (-1)
+        real_text_feats = text_feats[:, :-1, :]
+        virtual_feats = text_feats[:, -1:, :]
+        
+        # Positional Encoding on real sequence items
         real_text_feats = self.pos_encoder(real_text_feats)
         
-        update_nodes, _, _ = self.matcher(visual_feats, real_text_feats)
+        # Contextual alignment loop to preserve compatibility with 2D matching modules
+        updated_real_list = []
+        for b in range(batch_size):
+            updated_real_b, _, _ = self.matcher(visual_feats[b], real_text_feats[b])
+            updated_real_list.append(updated_real_b)
+            
+        update_nodes = torch.stack(updated_real_list, dim=0)
         
-        # Re-attach the virtual node to the updated graph
-        x = torch.cat([update_nodes, virtual_feat], dim=0)
-        
-        num_total_nodes = x.size(0)
+        # Re-assemble graph sequence
+        x = torch.cat([update_nodes, virtual_feats], dim=1)
         
         # Message Passing Loop
         for i, layer in enumerate(self.gnn_layers):
-            support = layer(x)
+            support = layer(x) # Shape: (Batch_Size, N, F)
             
-            # Create feature pairs for attention (src || dst)
-            # Shape (N,N,2*F)
-            x_i = support.unsqueeze(1).expand(-1, num_total_nodes, -1)
-            x_j = support.unsqueeze(0).expand(num_total_nodes, -1, -1)
+            # Broadcast token pairs to evaluate adjacency weights: (Batch_Size, N, N, 2*F)
+            x_i = support.unsqueeze(2).expand(-1, -1, num_total_nodes, -1)
+            x_j = support.unsqueeze(1).expand(-1, num_total_nodes, -1, -1)
             attention_input = torch.cat([x_i, x_j], dim=-1)
             
-            # Calculate attention scores 
-            attention_scores = self.attention_layers[i](attention_input).squeeze()
+            attention_scores = self.attention_layers[i](attention_input).squeeze(-1)
             attention_scores = F.leaky_relu(attention_scores, negative_slope=0.2)
             
-            # Mask out non-existent edges using the adjacency matrix (-inf for exp)
-            zero_vec = -9e15 * torch.ones_like(attention_scores)
-            attention_scores = torch.where(adj_matrix > 0, attention_scores, zero_vec)
+            # CRITICAL MASKING step: Set dummy positions and non-edges to -inf
+            # Padded entries have an adjacency coordinate of 0.0, filtering them out instantly
+            zero_mask = -9e15 * torch.ones_like(attention_scores)
+            attention_scores = torch.where(adj_matrix > 0, attention_scores, zero_mask)
             
-            # Normalize attention scores with softmax
+            # Softmax assigns exactly 0.0 weight to the masked fictitious nodes
             attention_weights = F.softmax(attention_scores, dim=-1)
             
-            # Aggregate neighbors using attention weights instead of uniform mean 
-            x_aggregated = torch.matmul(attention_weights, support)
+            # Batched Matrix Multiplication to route the representations
+            x_aggregated = torch.bmm(attention_weights, support)
             
             x = F.relu(x_aggregated)
             x = self.norm(x)
             x = self.dropout(x)
-             
-        # Global Graph Readout via Virtual Node
-        # Instead of Max/Mean pooling, extract the feature vector of the Virtual Node
-        # which has automatically collected global context from the entire recipe.
-        graph_rep = x[-1] 
+            
+        # Global Graph Readout via Virtual Node (always safe at index -1)
+        graph_rep = x[:, -1, :] 
         
-        return self.classifier(graph_rep)
+        logits = self.classifier(graph_rep)
+        return logits.squeeze(-1)

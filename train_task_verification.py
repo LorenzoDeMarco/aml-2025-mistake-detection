@@ -107,7 +107,7 @@ def train_leave_one_out(X, y, groups, mask, input_dim, num_epochs=15):
         
         # --- Training Loop ---
         model.train()
-        for epoch in range(num_epochs):
+        for _ in range(num_epochs):
             optimizer.zero_grad()
             logits = model(X_train, mask=mask_train)
             loss = criterion(logits, y_train.float())
