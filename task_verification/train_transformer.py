@@ -90,7 +90,7 @@ def train_loo(npz_path, annotations_path):
         test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=dynamic_collate_fn)
 
         model = TaskVerificationTransformer(
-            input_dim=768, embed_dim=c.embed_dim, num_layers=c.num_layers, num_heads=c.num_heads, dropout=c.dropout, max_len=1050
+            input_dim=768, embed_dim=c.embed_dim, num_layers=c.num_layers, num_heads=c.num_heads, dropout=c.dropout, max_seq_len=1050
         ).to(device)
 
         optimizer = optim.AdamW(model.parameters(), lr=c.learning_rate, weight_decay=1e-4)
