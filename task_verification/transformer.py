@@ -1,31 +1,40 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import math
 
 class TaskVerificationTransformer(nn.Module):
     def __init__(self, input_dim=768, embed_dim=256, num_heads=8, num_layers=4, dropout=0.3, max_seq_len=1050):
         super(TaskVerificationTransformer, self).__init__()
         
-        self.max_seq_len = max_seq_len
-        
-        # projection layer to reduce dimensionality from 768 to embed_dim
+        # linear projection
         self.input_proj = nn.Linear(input_dim, embed_dim)
         
-        # learnable [CLS] token parameter (like in Bert, initialized randomly, optimized during training)
+        # stride-4 Conv1D to downsample time dimension by 4
+        self.temporal_downsample = nn.Conv1d(
+            in_channels=embed_dim, 
+            out_channels=embed_dim, 
+            kernel_size=4, 
+            stride=4, 
+            padding=0
+        )
+        
+        # learnable [CLS] token parameter
         self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
         nn.init.normal_(self.cls_token, std=0.02)
         
-        # positional encoding to inject sequence order information
-        self.pos_encoder = PositionalEncoding(embed_dim, dropout, max_len=max_seq_len)
+        # positional encoding
+        downsampled_max_len = (max_seq_len // 4) + 50
+        self.pos_encoder = PositionalEncoding(embed_dim, dropout, max_len=downsampled_max_len)
         
-        # transformer encoder layers
+        #transformer encoder layers with Pre-LN (norm_first=True) for deep stability
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim, 
             nhead=num_heads, 
             dim_feedforward=embed_dim * 4, 
             dropout=dropout,
             batch_first=True,
-            norm_first=True # pre-layer normalization for deeper training stability with long sequences
+            norm_first=True
         )
         self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         
@@ -34,38 +43,50 @@ class TaskVerificationTransformer(nn.Module):
             nn.Linear(embed_dim, embed_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(embed_dim // 2, 1) 
+            nn.Linear(embed_dim // 2, 1)
         )
         
     def forward(self, x, mask=None):
-        """
-        x: [Batch_Size, Current_Batch_Max_Len, 768]
-        mask: [Batch_Size, Current_Batch_Max_Len] (1.0 for real data, 0.0 for padding)
-        """
         batch_size = x.size(0)
 
-        x = self.input_proj(x) # [B, N, embed_dim]
+        # project input features to embedding space
+        x = self.input_proj(x) # [B, T, embed_dim]
         
-        # prepend the [CLS] token to the sequence
-        # expand CLS token to match the current batch size: [B, 1, embed_dim]
-        cls_tokens = self.cls_token.expand(batch_size, -1, -1)
-        # new sequence length becomes N + 1
-        x = torch.cat((cls_tokens, x), dim=1) # [B, N + 1, embed_dim]
+        #apply Conv1D temporal downsampling
+        x = x.permute(0, 2, 1) # [B, embed_dim, T]
+        x = self.temporal_downsample(x) # [B, embed_dim, T_new]
+        x = x.permute(0, 2, 1) # [B, T_new, embed_dim]
         
-        #applyy positional encoding (it dynamically handles N + 1 positions up to max_seq_len)
+        #compress mask to match the downsampled features using MaxPool1D
+        if mask is not None:
+            mask = mask.unsqueeze(1) # [B, 1, T]
+            mask = F.max_pool1d(mask, kernel_size=4, stride=4) # [B, 1, T_new]
+            mask = mask.squeeze(1) # [B, T_new]
+            
+            #align padding mismatches due to integer division rounding
+            if mask.size(1) > x.size(1):
+                mask = mask[:, :x.size(1)]
+            elif mask.size(1) < x.size(1):
+                padding = torch.zeros((mask.size(0), x.size(1) - mask.size(1)), device=mask.device)
+                mask = torch.cat([mask, padding], dim=1)
+        
+        #prrepend the learnable [CLS] token
+        cls_tokens = self.cls_token.expand(batch_size, -1, -1) # [B, 1, embed_dim]
+        x = torch.cat((cls_tokens, x), dim=1) # [B, T_new + 1, embed_dim]
+        
         x = self.pos_encoder(x)
         
-        # adjust the attention mask to account for the prepended [CLS] token that should not be masked
+        # [CLS] should not be masked
         if mask is not None:
             cls_mask = torch.ones((batch_size, 1), dtype=mask.dtype, device=mask.device)
-            extended_mask = torch.cat((cls_mask, mask), dim=1) # [B, N + 1]
-            src_key_padding_mask = (extended_mask == 0)
+            extended_mask = torch.cat((cls_mask, mask), dim=1) # [B, T_new + 1]
+            src_key_padding_mask = (extended_mask == 0) # True means ignore padding position
         else:
             src_key_padding_mask = None
+    
+        output = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask) # [B, T_new + 1, embed_dim]
         
-        output = self.transformer_encoder(x, src_key_padding_mask=src_key_padding_mask) # [B, N + 1, embed_dim]
-        
-        #output from the [CLS] token 
+        #extract the [CLS] token output for classification
         cls_output = output[:, 0, :] # [B, embed_dim]
             
         logits = self.classifier(cls_output)
