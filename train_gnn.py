@@ -205,7 +205,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
         )
         
         # Reset weights to the pristine state for a fair fold evaluation
-        compiled_model.load_state_dict(initial_weights)
+        base_model.load_state_dict(initial_weights)
         
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)
         optimizer = optim.Adam(compiled_model.parameters(), lr=lr, weight_decay=weight_decay)
