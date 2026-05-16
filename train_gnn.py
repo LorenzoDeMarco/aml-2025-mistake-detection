@@ -1,15 +1,9 @@
 import json
 import torch
-import torch._dynamo 
-
-# ADDED: Instructs Dynamo to natively capture scalar outputs (like tensor.sum())
-# This prevents Graph Breaks when dynamically slicing tensors based on sequence length
-torch._dynamo.config.capture_scalar_outputs = True
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import argparse
-import copy 
 from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from core.models.graph_model import GraphClassifier
@@ -178,21 +172,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
     v_dim = dataset[0]['v'].shape[-1]
     t_dim = dataset[0]['t'].shape[-1]
     
-    print("\n[Compiling Graph Model JIT... Please wait]")
-    # Initialize the model once to avoid JIT recompilation overhead per fold
-    base_model = GraphClassifier(
-        visual_dim=v_dim, 
-        text_dim=t_dim, 
-        hidden_dim=hidden_dim, 
-        num_layers=num_layers, 
-        dropout_prob=dropout
-    ).to(device)
-    
-    # Store the random initialization weights to reset the model before each fold
-    initial_weights = copy.deepcopy(base_model.state_dict())
-    
-    # Compile the model. 'dynamic=True' handles sequence padding variations efficiently
-    compiled_model = torch.compile(base_model, dynamic=True)
+    print("\n[Starting LOGO Cross-Validation...]")
     
     for fold, (train_idx, test_idx) in enumerate(logo.split(indices, labels, groups=groups)):
         test_recipe_id = groups[test_idx[0]]
@@ -217,18 +197,24 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             shuffle=True, 
             collate_fn=collate_graph_batch
         )
-        
-        # Reset weights to the pristine state for a fair fold evaluation
-        base_model.load_state_dict(initial_weights)
+
+        # Initialize a fresh model for each fold
+        model = GraphClassifier(
+            visual_dim=v_dim, 
+            text_dim=t_dim, 
+            hidden_dim=hidden_dim, 
+            num_layers=num_layers, 
+            dropout_prob=dropout
+        ).to(device)
         
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)
-        optimizer = optim.Adam(compiled_model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         
         # Initialize the AMP (Automatic Mixed Precision) Scaler
         scaler = torch.amp.GradScaler('cuda')
         
         # --- Training Phase ---
-        compiled_model.train()
+        model.train()
         for _ in range(num_epochs):
             epoch_loss = 0.0
             
@@ -244,7 +230,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
                 
                 # Mixed Precision context: casts eligible operations to float16
                 with torch.amp.autocast('cuda'):
-                    logits = compiled_model(v_inputs, t_inputs, adj_inputs)
+                    logits = model(v_inputs, t_inputs, adj_inputs)
                     loss = criterion(logits, targets)
                 
                 # Backward pass through the scaler to prevent underflow
@@ -252,7 +238,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
                 
                 # Unscale gradients before clipping to ensure threshold accuracy
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(compiled_model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
                 scaler.step(optimizer)
                 scaler.update()
@@ -260,7 +246,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
                 epoch_loss += loss.item() * len(batch['ids'])
             
         # --- Evaluation Phase ---
-        compiled_model.eval()
+        model.eval()
         with torch.no_grad():
             test_sample = dataset[test_idx[0]]
             
@@ -269,7 +255,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             t_test = test_sample['t'].unsqueeze(0)
             adj_test = test_sample['adj'].unsqueeze(0)
             
-            test_logits = compiled_model(v_test, t_test, adj_test)
+            test_logits = model(v_test, t_test, adj_test)
             prob = torch.sigmoid(test_logits).item()
             
             pred = 1.0 if prob >= 0.5 else 0.0
@@ -328,4 +314,4 @@ if __name__ == "__main__":
         num_layers=args.num_layers,
         dropout=args.dropout,
         weight_decay=args.weight_decay
-)
+    )

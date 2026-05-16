@@ -19,7 +19,6 @@ class StepMatchingModule(nn.Module):
             nn.Linear(hidden_dim, text_dim)
         )
         
-    @torch.compiler.disable
     def forward(self, visual_feats, text_feats):
         """
         Args:
