@@ -71,8 +71,22 @@ class GraphClassifier(nn.Module):
         # Contextual alignment loop to preserve compatibility with 2D matching modules
         updated_real_list = []
         for b in range(batch_size):
-            updated_real_b, _, _ = self.matcher(visual_feats[b], real_text_feats[b])
-            updated_real_list.append(updated_real_b)
+            # Dynamic unpadding: identify the valid length of sequences for this specific graph
+            # We count rows that contain at least one non-zero element
+            v_len = (visual_feats[b] != 0).any(dim=-1).sum()
+            t_len = (real_text_feats[b] != 0).any(dim=-1).sum()
+            
+            # Extract exclusively the real nodes to prevent Hungarian Matching from aligning with padding zeros
+            real_v = visual_feats[b, :v_len, :]
+            real_t = real_text_feats[b, :t_len, :]
+            
+            # Perform matching safely
+            updated_real_t, _, _ = self.matcher(real_v, real_t)
+            
+            # Re-assemble the tensor with padding to maintain 3D batch structure
+            padded_updated = torch.zeros_like(real_text_feats[b])
+            padded_updated[:t_len, :] = updated_real_t
+            updated_real_list.append(padded_updated)
             
         update_nodes = torch.stack(updated_real_list, dim=0)
         
