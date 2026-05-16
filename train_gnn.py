@@ -185,7 +185,9 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             train_subdataset, 
             batch_size=batch_size,
             shuffle=True, 
-            collate_fn=collate_graph_batch
+            collate_fn=collate_graph_batch,
+            pin_memory=True,
+            num_workers=4
         )
         
         # Initialize a fresh model for each fold
@@ -196,9 +198,12 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             num_layers=num_layers, 
             dropout_prob=dropout
         ).to(device)
-        
+        model = torch.compile(model) 
         criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        # Initialize the Gradient Scaler for Mixed Precision
+        scaler = torch.amp.GradScaler('cuda')
         
         # Training
         model.train()
@@ -206,24 +211,32 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             epoch_loss = 0.0
             
             for batch in train_loader:
-                optimizer.zero_grad()
+                # Set to none is faster than writing zeros
+                optimizer.zero_grad(set_to_none=True)
                 
                 # Fetch padded inputs directly from the collated dictionary mapping
-                v_inputs = batch['v'].to(device)
-                t_inputs = batch['t'].to(device)
-                adj_inputs = batch['adj'].to(device)
-                targets = batch['y'].to(device)
+                v_inputs = batch['v'].to(device, non_blocking=True)
+                t_inputs = batch['t'].to(device, non_blocking=True)
+                adj_inputs = batch['adj'].to(device, non_blocking=True)
+                targets = batch['y'].to(device, non_blocking=True)
                 
-                # Forward pass processes 16 graphs simultaneously
-                logits = model(v_inputs, t_inputs, adj_inputs)
+                # Automatic Mixed Precision context manager
+                with torch.amp.autocast('cuda'):
+                    # Forward pass processes graphs simultaneously
+                    logits = model(v_inputs, t_inputs, adj_inputs)
+                    loss = criterion(logits, targets)
                 
-                loss = criterion(logits, targets)
-                loss.backward()
+                # Backward pass via scaler
+                scaler.scale(loss).backward()
                 
-                # Total gradient clipping protection
+                # Total gradient clipping protection (must unscale first)
+                scaler.unscale_(optimizer)
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 
-                optimizer.step()
+                # Optimizer step and scaler update
+                scaler.step(optimizer)
+                scaler.update()
+                
                 epoch_loss += loss.item() * len(batch['ids'])
             
         # Evaluation
