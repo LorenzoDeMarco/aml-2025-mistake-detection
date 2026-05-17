@@ -2,7 +2,7 @@ import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.functional as F
+import torch.nn.functional as F
 import numpy as np
 import argparse
 from sklearn.model_selection import LeaveOneGroupOut
