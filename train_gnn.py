@@ -2,6 +2,7 @@ import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.functional as F
 import numpy as np
 import argparse
 from sklearn.model_selection import LeaveOneGroupOut
@@ -11,6 +12,40 @@ from torch.utils.data import DataLoader, Subset
 
 # Define the hardware accelerator
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+class BinaryFocalLoss(nn.Module):
+    """
+    Differentiable Binary Focal Loss optimized for highly skewed sequence recognition.
+    Down-weights easy examples to force gradient exploration into hard anomalies.
+    """
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = 'mean'):
+        super().__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # Standard stable element-wise binary cross entropy
+        bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        
+        probs = torch.sigmoid(logits)
+        # Calculate p_t (probability of the ground truth label)
+        p_t = probs * targets + (1 - probs) * (1 - targets)
+        
+        # Apply the hard-example mining factor (1 - p_t)^gamma
+        focal_modulation = (1 - p_t) ** self.gamma
+        loss = focal_modulation * bce_loss
+        
+        # Apply binary class balancing parameter alpha
+        if self.alpha >= 0:
+            alpha_factor = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+            loss = alpha_factor * loss
+            
+        if self.reduction == 'mean':
+            return loss.mean()
+        elif self.reduction == 'sum':
+            return loss.sum()
+        return loss
 
 def collate_graph_batch(batch):
     """
@@ -179,7 +214,22 @@ def find_optimal_threshold(y_true, y_scores):
             
     return best_threshold, best_f1
 
-def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-4, hidden_dim=256, num_layers=2, dropout=0.4, weight_decay=1e-5, th=0.5):
+def train_gnn_logo(
+    dataset, 
+    groups, 
+    labels, 
+    num_epochs=15, 
+    batch_size=16, 
+    lr=1e-4, 
+    hidden_dim=256, 
+    num_layers=2, 
+    dropout=0.4, 
+    weight_decay=1e-5, 
+    th=0.5,
+    alpha=0.25,
+    gamma=2.0,
+    reduction="mean"
+):
     """
     Main training loop implementing Leave-One-Group-Out (LOGO) cross-validation.
     """
@@ -227,7 +277,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             dropout_prob=dropout
         ).to(device)
         
-        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)
+        criterion = BinaryFocalLoss(alpha=alpha, gamma=gamma, reduction=reduction)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
         
         # Initialize the AMP (Automatic Mixed Precision) Scaler
@@ -319,6 +369,11 @@ if __name__ == "__main__":
     parser.add_argument("--num_layers", type=int, default=2, help="Number of GNN message passing layers")
     parser.add_argument("--dropout", type=float, default=0.4, help="Dropout probability")
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="L2 regularization penalty for Adam")
+    
+    # Focal Loss Hyperparameters
+    parser.add_argument("--alpha", type=float, default=0.25, help="Balancing factor for Focal Loss")
+    parser.add_argument("--gamma", type=float, default=2.0, help="Focusing parameter for Focal Loss")
+    parser.add_argument("--reduction", type=str, default="mean")
     args = parser.parse_args()
     
     print("\n[Starting Graph Neural Network Training]")
@@ -338,5 +393,8 @@ if __name__ == "__main__":
         num_layers=args.num_layers,
         dropout=args.dropout,
         weight_decay=args.weight_decay,
-        th = args.threshold
+        th = args.threshold,
+        alpha=args.alpha,
+        gamma=args.gamma,
+        reduction=args.reduction
     )
