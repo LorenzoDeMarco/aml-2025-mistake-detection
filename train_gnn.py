@@ -205,7 +205,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
         
         # Apply a soft cap (e.g., maximum 2.0) to prevent the model from collapsing to predicting only 1s
         raw_weight = num_neg / (num_pos + 1e-5)
-        soft_weight = min(raw_weight, 2.0)
+        soft_weight = min(raw_weight, 4.0)
         pos_weight_val = torch.tensor([soft_weight], dtype=torch.float32).to(device)
         
         train_subdataset = Subset(dataset, train_idx)
