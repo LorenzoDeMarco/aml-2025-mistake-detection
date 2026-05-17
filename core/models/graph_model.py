@@ -4,6 +4,47 @@ import torch.nn.functional as F
 from core.models.step_matching import StepMatchingModule
 import math
 
+class DAGNNLayer(nn.Module):
+    """
+    Custom Implementation of a Directed Acyclic Graph Neural Network Layer.
+    Uses a GRU-like gating mechanism to update node states based on predecessors.
+    """
+    def __init__(self, hidden_dim):
+        super().__init__()
+        
+        # Projection for incoming messages 
+        self.message_weight = nn.Linear(hidden_dim, hidden_dim)
+        
+        # GRU Gates (Input size: hidden_dim message + hidden_dim state = hidden_dim * 2)
+        self.update_gate = nn.Linear(hidden_dim*2, hidden_dim)
+        self.reset_gate = nn.Linear(hidden_dim*2, hidden_dim)
+        self.cell_gate = nn.Linear(hidden_dim*2, hidden_dim)
+        
+    def forward(self, x, adj_matrix):
+        # x shape: (Batch_Size, Num_Nodes, Feature_dim)
+        # adj_matrix shape: (Batch_Size, Num_Nodes, Num_Nodes)
+        
+        # Generate messages for all nodes
+        messages = self.message_weight(x)
+        
+        # Aggregate messagges strictly from predecessors
+        # (adj_metrix MUST be lower-triangular / directional)
+        agg_messages = torch.bmm(adj_matrix, messages)
+        
+        # Gated update (GRU mecchanism)
+        cat_state = torch.cat([x, agg_messages], dim=-1)
+        
+        # Compute graph
+        z = torch.sigmoid(self.update_gate(cat_state)) # what to keep
+        r = torch.sigmoid(self.reset_gate(cat_state)) # what to forget
+        
+        # Compute candidate hidden state
+        cat_reset_state = torch.cat([x*r, agg_messages], dim=-1)
+        h_tilde = torch.tanh(self.cell_gate(cat_reset_state))
+        
+        # Final node update 
+        return (1-z)*x + z*h_tilde
+
 class PositionalEncoding(nn.Module):
     """
     Injects information about the relative or absolute position of the recipe steps into the node features.
@@ -32,20 +73,16 @@ class GraphClassifier(nn.Module):
         self.matcher = StepMatchingModule(visual_dim, text_dim, hidden_dim)
         self.pos_encoder = PositionalEncoding(d_model=text_dim)
         
-        # Graph Attention Layers (GAT-like for 3D batched tensors)
-        self.attention_layers = nn.ModuleList([
-            nn.Linear(text_dim * 2, 1) for _ in range(num_layers)
-        ])
-        
-        self.gnn_layers = nn.ModuleList([
-            nn.Linear(text_dim , text_dim) for _ in range(num_layers)
+        # DAGNN
+        self.dagnn_layers = nn.ModuleList([
+            DAGNNLayer(hidden_dim=text_dim) for _ in range(num_layers)
         ])
         
         self.norm = nn.LayerNorm(text_dim)
         self.dropout = nn.Dropout(p=dropout_prob)
          
         self.classifier = nn.Sequential(
-            nn.Linear(text_dim, hidden_dim),
+            nn.Linear(text_dim * 2, hidden_dim),
             nn.ReLU(),
             nn.Dropout(p=dropout_prob),
             nn.Linear(hidden_dim, 1)
@@ -68,63 +105,34 @@ class GraphClassifier(nn.Module):
         # Positional Encoding on real sequence items
         real_text_feats = self.pos_encoder(real_text_feats)
         
-        # Contextual alignment loop to preserve compatibility with 2D matching modules
-        updated_real_list = []
-        for b in range(batch_size):
-            # Dynamic unpadding: identify the valid length of sequences for this specific graph
-            # We count rows that contain at least one non-zero element
-            v_len = (visual_feats[b] != 0).any(dim=-1).sum()
-            t_len = (real_text_feats[b] != 0).any(dim=-1).sum()
-            
-            # Extract exclusively the real nodes to prevent Hungarian Matching from aligning with padding zeros
-            real_v = visual_feats[b, :v_len, :]
-            real_t = real_text_feats[b, :t_len, :]
-            
-            # Perform matching safely
-            updated_real_t, _, _ = self.matcher(real_v, real_t)
-            
-            # Re-assemble the tensor with padding to maintain 3D batch structure
-            padded_updated = torch.zeros_like(real_text_feats[b])
-            padded_updated[:t_len, :] = updated_real_t
-            updated_real_list.append(padded_updated)
-            
-        update_nodes = torch.stack(updated_real_list, dim=0)
+        # Compute valid lengths for the entire batch simultaneously via boolean masking
+        v_lens = (visual_feats != 0).any(dim=-1).sum(dim=-1).tolist()
+        t_lens = (real_text_feats != 0).any(dim=-1).sum(dim=-1).tolist()
+        
+        # Perform fully batched Hungarian Matching
+        updated_real_text = self.matcher(visual_feats, real_text_feats, v_lens, t_lens)
         
         # Re-assemble graph sequence
-        x = torch.cat([update_nodes, virtual_feats], dim=1)
+        x = torch.cat([updated_real_text, virtual_feats], dim=1)
         
-        # Message Passing Loop
-        for i, layer in enumerate(self.gnn_layers):
-            support = layer(x) # Shape: (Batch_Size, N, F)
+        # DAGNN message passing loop
+        for layer in self.dagnn_layers:
+            x_residual = x
             
-            # Broadcast token pairs to evaluate adjacency weights: (Batch_Size, N, N, 2*F)
-            x_i = support.unsqueeze(2).expand(-1, -1, num_total_nodes, -1)
-            x_j = support.unsqueeze(1).expand(-1, num_total_nodes, -1, -1)
-            attention_input = torch.cat([x_i, x_j], dim=-1)
+            x_new = layer(x, adj_matrix)
             
-            attention_scores = self.attention_layers[i](attention_input).squeeze(-1)
-            attention_scores = F.leaky_relu(attention_scores, negative_slope=0.2)
+            x_new = self.norm(x_new)
+            x_new = self.dropout(x_new)
             
-            # Use -10000.0 instead of -9e15. 
-            # -9e15 overflows float16 limits causing -inf and subsequent NaNs in Softmax.
-            zero_mask = -10000.0 * torch.ones_like(attention_scores)
-            attention_scores = torch.where(adj_matrix > 0, attention_scores, zero_mask)
+            # Skip connection to facilitate gradients
+            x = x_residual + x_new
             
-            # Softmax assigns exactly 0.0 weight to the masked fictitious nodes
-            attention_weights = F.softmax(attention_scores, dim=-1)
-            
-            # Safety net: explicitly convert any stray NaNs to 0.0 before matrix multiplication
-            attention_weights = torch.nan_to_num(attention_weights, nan=0.0)
-            
-            # Batched Matrix Multiplication to route the representations
-            x_aggregated = torch.bmm(attention_weights, support)
-            
-            x = F.relu(x_aggregated)
-            x = self.norm(x)
-            x = self.dropout(x)
-            
-        # Global Graph Readout via Virtual Node (always safe at index -1)
-        graph_rep = x[:, -1, :] 
+        # Rich readout 
+        virtual_rep = x[:, -1, :]
+        real_nodes = x[:, :-1, :]
+        mean_pool_rep = real_nodes.mean(dim=1)
         
+        graph_rep = torch.cat([virtual_rep, mean_pool_rep], dim=-1)
         logits = self.classifier(graph_rep)
+        
         return logits.squeeze(-1)

@@ -19,7 +19,7 @@ class StepMatchingModule(nn.Module):
             nn.Linear(hidden_dim, text_dim)
         )
         
-    def forward(self, visual_feats, text_feats):
+    def forward(self, batched_visual, batched_text, v_lens, t_lens):
         """
         Args:
             visual_feats: Tensor of shape (num_visual_steps, 768)
@@ -27,33 +27,48 @@ class StepMatchingModule(nn.Module):
         Returns:
             updated_nodes: Tensor of shape (num_graph nodes, 256)
         """
+        batch_size = batched_visual.size(0)
         
-        # Project visual features to match the dimensionality of text features
-        proj_visual = self.visual_proj(visual_feats)
+        # Project all visual features in parallel on GPU
+        proj_visual = self.visual_proj(batched_visual)
         
         # Normalize features to compute Cosine Similarity efficiently via dot product
         norm_visual = F.normalize(proj_visual, p=2, dim=1)
-        norm_text = F.normalize(text_feats, p=2, dim=1)
+        norm_text = F.normalize(batched_text, p=2, dim=1)
         
-        # Compute similarity matrix. Shape: (num_visual_steps, num_graph_nodes)
-        sim_matrix = torch.matmul(norm_visual, norm_text.t())
+        # Batched Matrix Multiplication to compute all similarities at once (GPU)
+        # Result shape: (Batch, Max_Visual_Steps, Max_Nodes)
+        sim_matrix = torch.bmm(norm_visual, norm_text.transpose(1, 2))
         
-        # Convert similarity to cost (Hungarian algorithm minimizes cost)
-        cost_matrix = (1.0 - sim_matrix).detach().cpu().numpy()
+        # Move the ENTIRE batch of cost matrices to CPU exactly ONCE
+        cost_matrices = (1.0 - sim_matrix).detach().cpu().numpy()
         
-        # Hungarian matching 
-        # linear_sum_assignment finds the optimal 1-to-1 bipartite matching
-        row_idx, col_idx = linear_sum_assignment(cost_matrix)
-        
-        # Node feature update 
-        # Clone the original text features to initialize the updated nodes
-        updated_nodes = text_feats.clone()
-        
-        for v_idx, n_idx in zip(row_idx, col_idx):
-            # Concatenate the projected visual feature with the corresponding text node
-            combined_feat = torch.cat([proj_visual[v_idx], text_feats[n_idx]], dim=0)
+        updated_nodes_list = []
+        for b in range(batch_size):
+            v_len = v_lens[b]
+            t_len = t_lens[b]
             
-            # Pass trough the learnable fusion projection to update the node
-            updated_nodes[n_idx] = self.fusion_proj(combined_feat)
+            # Extract only the valid, unpadded portion of the cost matrix
+            valid_cost = cost_matrices[b,  :v_len, :t_len]
             
-        return updated_nodes, row_idx, col_idx
+            # Hungarian matching (CPU)
+            row_idx, col_idx = linear_sum_assignment(valid_cost)
+            
+            # Feature update (GPU)
+            updated_t = batched_text[b, :t_len, :].clone()
+            
+            # Grather matching features using indexing to preserve backpropagation gradients
+            matched_v = proj_visual[b, row_idx, :]
+            matched_t = proj_visual[b, col_idx, :]
+            
+            combined_feat = torch.cat([matched_v, matched_t], dim=1)
+            fused_feat = self.fusion_proj(combined_feat)
+            
+            updated_t[col_idx] = fused_feat
+            
+            # Pad back to max dimensions to mantain 3D batch shape
+            padded_updated = torch.zeros_like(batched_text[b])
+            padded_updated[:t_len, :] = updated_t
+            updated_nodes_list.append(padded_updated)
+            
+        return torch.stack(updated_nodes_list, dim=0)

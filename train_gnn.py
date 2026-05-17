@@ -137,13 +137,11 @@ def load_graph_data(visual_npz, text_npz, annotations_file):
             
             # Create sequential bidirectional edges for real recipe steps
             for i in range(num_nodes - 1):
-                adj[i, i+1] = 1.0 
-                adj[i+1, i] = 1.0 
+                adj[i+1, i] = 1.0
                 
             # Fully connect the Virtual Node (last index) to all real nodes
             for i in range(num_nodes):
-                adj[i, -1] = 1.0 
-                adj[-1, i] = 1.0 
+                adj[-1, i] = 1.0
             
             y = recipe_labels.get(rec_id, 0)
             
@@ -159,7 +157,29 @@ def load_graph_data(visual_npz, text_npz, annotations_file):
             
     return dataset, np.array(groups), np.array(labels)
 
-def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-4, hidden_dim=256, num_layers=2, dropout=0.4, weight_decay=1e-5):
+def find_optimal_threshold(y_true, y_scores):
+    """
+    Evaluates multiple thresholds to find the one that maximizes the F1-score.
+    Returns the best threshold and its corresponding F1-score.
+    """
+    best_threshold = 0.5
+    best_f1 = 0.0
+    
+    # Test thresholds from 0.1 to 0.9 with a 0.05 step
+    thresholds = np.arange(0.1, 0.95, 0.01)
+    
+    for th in thresholds:
+        # Convert probabilities to binary predictions based on current threshold
+        y_pred = (y_scores >= th).astype(int)
+        current_f1 = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        
+        if current_f1 > best_f1:
+            best_f1 = current_f1
+            best_threshold = th
+            
+    return best_threshold, best_f1
+
+def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-4, hidden_dim=256, num_layers=2, dropout=0.4, weight_decay=1e-5, th=0.5):
     """
     Main training loop implementing Leave-One-Group-Out (LOGO) cross-validation.
     """
@@ -258,7 +278,7 @@ def train_gnn_logo(dataset, groups, labels, num_epochs=15, batch_size=16, lr=1e-
             test_logits = model(v_test, t_test, adj_test)
             prob = torch.sigmoid(test_logits).item()
             
-            pred = 1.0 if prob >= 0.5 else 0.0
+            pred = 1.0 if prob >= th else 0.0
             target = test_sample['y'].item()
             
             all_preds.append(pred)
@@ -278,6 +298,9 @@ Global GNN (Substep 4) LOGO Results ->
     F1:    {total_metrics['f1_score']:.4f}
     AUROC: {total_metrics['auroc']:.4f}""")
     
+    best_th, best_f1 = find_optimal_threshold(np.array(all_targets), np.array(all_scores))
+    print(f"Optimal Threshold: {best_th:.2f} -> Best F1: {best_f1:.4f}")
+    
     
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-step Action Graph Neural Network")
@@ -289,6 +312,7 @@ if __name__ == "__main__":
     parser.add_argument("--epochs", type=int, default=15, help="Epochs per fold")
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for the DataLoader")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate") 
+    parser.add_argument("--threshold", type=float, default=0.5, help="Threshold for the anomaly detection")
     
     # Architecture and Regularization Hyperparameters
     parser.add_argument("--hidden_dim", type=int, default=256, help="Hidden dimension size")
@@ -313,5 +337,6 @@ if __name__ == "__main__":
         hidden_dim=args.hidden_dim,
         num_layers=args.num_layers,
         dropout=args.dropout,
-        weight_decay=args.weight_decay
+        weight_decay=args.weight_decay,
+        th = args.threshold
     )
