@@ -10,12 +10,12 @@ class TaskVerificationTransformer(nn.Module):
         # linear projection
         self.input_proj = nn.Linear(input_dim, embed_dim)
         
-        # stride-4 Conv1D to downsample time dimension by 4
+        # stride-2 Conv1D to downsample time dimension by 2
         self.temporal_downsample = nn.Conv1d(
             in_channels=embed_dim, 
             out_channels=embed_dim, 
             kernel_size=4, 
-            stride=4, 
+            stride=2, 
             padding=0
         )
         
@@ -24,7 +24,7 @@ class TaskVerificationTransformer(nn.Module):
         nn.init.normal_(self.cls_token, std=0.02)
         
         # positional encoding
-        downsampled_max_len = (max_seq_len // 4) + 50
+        downsampled_max_len = (max_seq_len // 2) + 50 ##stsride 2 reduces max length by half, add some buffer for safety
         self.pos_encoder = PositionalEncoding(embed_dim, dropout, max_len=downsampled_max_len)
         
         #transformer encoder layers with Pre-LN (norm_first=True) for deep stability
@@ -60,7 +60,7 @@ class TaskVerificationTransformer(nn.Module):
         #compress mask to match the downsampled features using MaxPool1D
         if mask is not None:
             mask = mask.unsqueeze(1) # [B, 1, T]
-            mask = F.max_pool1d(mask, kernel_size=4, stride=4) # [B, 1, T_new]
+            mask = F.max_pool1d(mask, kernel_size=4, stride=2) # [B, 1, T_new]
             mask = mask.squeeze(1) # [B, T_new]
             
             #align padding mismatches due to integer division rounding

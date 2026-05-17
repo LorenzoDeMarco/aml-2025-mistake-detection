@@ -92,20 +92,20 @@ def train_loo(npz_path, annotations_path):
             reinit=True,
             config={
                 "learning_rate": 2e-4, 
-                "dropout": 0.3,
+                "dropout": 0.2,
                 "embed_dim": 256,       
-                "num_layers": 4,
+                "num_layers": 2,
                 "num_heads": 8,
-                "batch_size": 32,     
-                "epochs": 20        
+                "batch_size": 64,     
+                "epochs": 12        
             }
         )
         c = wandb.config
 
         train_ds = TaskVerificationDataset(npz_path, annotations_path, train_vids, split='train')
         test_ds = TaskVerificationDataset(npz_path, annotations_path, test_vids, split='test')
-        train_loader = DataLoader(train_ds, batch_size=c.batch_size, shuffle=True, collate_fn=dynamic_collate_fn)
-        test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=dynamic_collate_fn)
+        train_loader = DataLoader(train_ds, batch_size=c.batch_size, shuffle=True, collate_fn=dynamic_collate_fn, num_workers=2, pin_memory=True)
+        test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=dynamic_collate_fn, num_workers=2, pin_memory=True)
 
         model = TaskVerificationTransformer(
             input_dim=768, embed_dim=c.embed_dim, num_layers=c.num_layers, num_heads=c.num_heads, dropout=c.dropout, max_seq_len=1050
@@ -115,8 +115,11 @@ def train_loo(npz_path, annotations_path):
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=c.epochs, eta_min=1e-6)
 
         #loss setup with class imbalance handling
-        pos_weight_val = 164.0 / 220.0
-        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(device))
+        #pos_weight_val = 164.0 / 220.0
+        ##criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight_val]).to(device))
+
+        #symmetric loss performs better with label smoothing and prevents overconfidence on the minority class, improving generalization
+        criterion = nn.BCEWithLogitsLoss()
 
         # training loop with mixed precision and label smoothing
         label_smoothing = 0.1
@@ -150,6 +153,12 @@ def train_loo(npz_path, annotations_path):
                 epoch_loss += loss.item()
                 
             scheduler.step()
+            
+            avg_loss = epoch_loss / len(train_loader)
+            wandb.log({
+                "epoch/train_loss": avg_loss,
+                "epoch/epoch_step": epoch
+            })
 
             if epoch == c.epochs - 1:
                 print(f"  [Fold {fold}] Final Loss: {epoch_loss/len(train_loader):.4f}", flush=True)

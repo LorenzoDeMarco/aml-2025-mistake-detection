@@ -18,6 +18,7 @@ class TaskVerificationDataset(Dataset):
     def __len__(self):
         return len(self.video_list)
 
+    #Avoid to use because performs worse
     def apply_augmentation(self, feat):
         # gaussian noise
         if np.random.rand() > 0.4:
@@ -40,13 +41,8 @@ class TaskVerificationDataset(Dataset):
         video_id = self.video_list[idx]
         feat = self.features[video_id].astype(np.float32)
         
-        # Apply augmentation only during training
-        if self.split == 'train':
-            feat = self.apply_augmentation(feat)
-        
         has_error = any(step.get('has_errors', False) for step in self.annotations[video_id].get('steps', []))
         label = 1 if has_error else 0
-        
         
         return {
             'features': torch.tensor(feat, dtype=torch.float32),
