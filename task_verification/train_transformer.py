@@ -97,7 +97,7 @@ def train_loo(npz_path, annotations_path):
                 "num_layers": 2,
                 "num_heads": 8,
                 "batch_size": 64,     
-                "epochs": 12        
+                "epochs": 35        
             }
         )
         c = wandb.config
