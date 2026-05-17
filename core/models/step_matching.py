@@ -64,7 +64,7 @@ class StepMatchingModule(nn.Module):
             combined_feat = torch.cat([matched_v, matched_t], dim=1)
             fused_feat = self.fusion_proj(combined_feat)
             
-            updated_t[col_idx] = fused_feat
+            updated_t[col_idx] = fused_feat.to(updated_t.dtype)
             
             # Pad back to max dimensions to mantain 3D batch shape
             padded_updated = torch.zeros_like(batched_text[b])
