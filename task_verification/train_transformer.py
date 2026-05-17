@@ -104,8 +104,8 @@ def train_loo(npz_path, annotations_path):
 
         train_ds = TaskVerificationDataset(npz_path, annotations_path, train_vids, split='train')
         test_ds = TaskVerificationDataset(npz_path, annotations_path, test_vids, split='test')
-        train_loader = DataLoader(train_ds, batch_size=c.batch_size, shuffle=True, collate_fn=dynamic_collate_fn, num_workers=2, pin_memory=True)
-        test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=dynamic_collate_fn, num_workers=2, pin_memory=True)
+        train_loader = DataLoader(train_ds, batch_size=c.batch_size, shuffle=True, collate_fn=dynamic_collate_fn)
+        test_loader = DataLoader(test_ds, batch_size=1, shuffle=False, collate_fn=dynamic_collate_fn)
 
         model = TaskVerificationTransformer(
             input_dim=768, embed_dim=c.embed_dim, num_layers=c.num_layers, num_heads=c.num_heads, dropout=c.dropout, max_seq_len=1050
@@ -153,7 +153,7 @@ def train_loo(npz_path, annotations_path):
                 epoch_loss += loss.item()
                 
             scheduler.step()
-            
+
             avg_loss = epoch_loss / len(train_loader)
             wandb.log({
                 "epoch/train_loss": avg_loss,
