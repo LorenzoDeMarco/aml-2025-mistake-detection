@@ -92,12 +92,12 @@ def train_loo(npz_path, annotations_path):
             reinit=True,
             config={
                 "learning_rate": 2e-4, 
-                "dropout": 0.2,
+                "dropout": 0.4,
                 "embed_dim": 256,       
                 "num_layers": 2,
                 "num_heads": 8,
                 "batch_size": 64,     
-                "epochs": 35        
+                "epochs": 20        
             }
         )
         c = wandb.config
