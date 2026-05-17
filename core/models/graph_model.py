@@ -80,6 +80,12 @@ class GraphClassifier(nn.Module):
         
         self.norm = nn.LayerNorm(text_dim)
         self.dropout = nn.Dropout(p=dropout_prob)
+        
+        self.attention = nn.Sequential(
+            nn.Linear(text_dim, hidden_dim // 2),
+            nn.Tanh(),
+            nn.Linear(hidden_dim // 2, 1)
+        )
          
         self.classifier = nn.Sequential(
             nn.Linear(text_dim * 2, hidden_dim),
@@ -118,21 +124,33 @@ class GraphClassifier(nn.Module):
         # DAGNN message passing loop
         for layer in self.dagnn_layers:
             x_residual = x
-            
             x_new = layer(x, adj_matrix)
-            
             x_new = self.norm(x_new)
             x_new = self.dropout(x_new)
-            
-            # Skip connection to facilitate gradients
             x = x_residual + x_new
             
         # Rich readout 
         virtual_rep = x[:, -1, :]
         real_nodes = x[:, :-1, :]
-        mean_pool_rep = real_nodes.mean(dim=1)
         
-        graph_rep = torch.cat([virtual_rep, mean_pool_rep], dim=-1)
+        # Compute raw attention scores
+        attn_scores = self.attention(real_nodes).squeeze(-1)  # (Batch_Size, Max_Nodes)
+        
+        # Dynamic padding masking to prevent gradient updates on dummy/padded nodes
+        # Identify real nodes that consist entirely of zero padding
+        padding_mask = (real_nodes == 0).all(dim=-1)  # (Batch_Size, Max_Nodes)
+        
+        # Assign a strongly negative value (-10000.0 is safe for FP16/AMP numeric limits) to padded positions
+        attn_scores = attn_scores.masked_fill(padding_mask, -10000.0)
+        
+        # Softmax activation to derive the probability distribution exclusively over valid sequence nodes
+        attn_weights = F.softmax(attn_scores, dim=-1).unsqueeze(-1)  # (Batch_Size, Max_Nodes, 1)
+        
+        # Weighted summation (Content-dependent Attention Pooling instead of arithmetic mean)
+        attended_pool_rep = torch.sum(real_nodes * attn_weights, dim=1)  # (Batch_Size, text_dim)
+        
+        # Final feature concatenation to preserve the downstream classifier input dimension (text_dim * 2)
+        graph_rep = torch.cat([virtual_rep, attended_pool_rep], dim=-1)
         logits = self.classifier(graph_rep)
         
         return logits.squeeze(-1)
