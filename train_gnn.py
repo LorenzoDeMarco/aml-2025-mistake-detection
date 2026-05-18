@@ -9,6 +9,7 @@ from sklearn.model_selection import LeaveOneGroupOut
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from core.models.graph_model import GraphClassifier
 from torch.utils.data import DataLoader, Subset
+import wandb
 
 # Define the hardware accelerator
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -294,7 +295,7 @@ def train_gnn_logo(
         scaler = torch.amp.GradScaler('cuda')
         
         # --- Training Phase ---
-        for _ in range(num_epochs):
+        for epoch in range(num_epochs):
             epoch_loss = 0.0
             model.train() 
             for batch in train_loader:
@@ -326,6 +327,13 @@ def train_gnn_logo(
             
             # Update the learning rate at the end of each training epoch
             scheduler.step()
+            
+            wandb.log({
+                "train_loss": epoch_loss / len(train_subdataset),
+                "learning_rate": scheduler.get_last_lr()[0],
+                "fold": fold + 1,
+                "epoch": epoch + 1 + (fold * num_epochs)
+            })
             
         # --- Evaluation Phase ---
         model.eval()
@@ -362,6 +370,18 @@ Global GNN (Substep 4) LOGO Results ->
     
     best_th, best_f1 = find_optimal_threshold(np.array(all_targets), np.array(all_scores))
     print(f"Optimal Threshold: {best_th:.2f} -> Best F1: {best_f1:.4f}")
+    wandb.log({
+        "global/Accuracy": total_metrics['accuracy'],
+        "global/Precision": total_metrics['precision'],
+        "global/Recall": total_metrics['recall'],
+        "global/F1_Score": total_metrics['f1_score'],
+        "global/AUROC": total_metrics['auroc'],
+        "global/Optimal_Threshold": best_th,
+        "global/Best_F1_at_Threshold": best_f1,
+        "global/Probability_Distribution": wandb.Histogram(all_scores) 
+    })
+    
+    wandb.finish()
     
     
 if __name__ == "__main__":
@@ -383,6 +403,12 @@ if __name__ == "__main__":
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="L2 regularization penalty for Adam")
     
     args = parser.parse_args()
+    
+    wandb.init(
+        project="gnn-captain_cook",
+        name=f"LOGO_BCE_hd{args.hidden_dim}_ep{args.epochs}",
+        config=vars(args)
+    )
     
     print("\n[Starting Graph Neural Network Training]")
     print(f"Hardware utilized: {device.type.upper()} (Pre-loading dataset)")
