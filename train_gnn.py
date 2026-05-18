@@ -236,6 +236,7 @@ def train_gnn_logo(
     th=0.5,
     alpha=0.25,
     gamma=2.0,
+    smoothing=0.05,
     reduction="mean"
 ):
     """
@@ -285,17 +286,21 @@ def train_gnn_logo(
             dropout_prob=dropout
         ).to(device)
         
-        criterion = BinaryFocalLoss(alpha=alpha, gamma=gamma, reduction=reduction)
+        criterion = BinaryFocalLoss(alpha=alpha, gamma=gamma, smoothing=smoothing, reduction=reduction)
         optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        # Initialize the Cosine Annealing LR scheduler
+        # T_max is set to num_epochs (the total budget of epochs per fold)
+        # eta_min defines the final learning rate floor (1e-6 is optimal for deep refinement)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-6)
         
         # Initialize the AMP (Automatic Mixed Precision) Scaler
         scaler = torch.amp.GradScaler('cuda')
         
         # --- Training Phase ---
-        model.train()
         for _ in range(num_epochs):
             epoch_loss = 0.0
-            
+            model.train() 
             for batch in train_loader:
                 # Setting gradients to None is computationally faster than zeroing them
                 optimizer.zero_grad(set_to_none=True)
@@ -322,6 +327,9 @@ def train_gnn_logo(
                 scaler.update()
                 
                 epoch_loss += loss.item() * len(batch['ids'])
+            
+            # Update the learning rate at the end of each training epoch
+            scheduler.step()
             
         # --- Evaluation Phase ---
         model.eval()
@@ -381,6 +389,7 @@ if __name__ == "__main__":
     # Focal Loss Hyperparameters
     parser.add_argument("--alpha", type=float, default=0.25, help="Balancing factor for Focal Loss")
     parser.add_argument("--gamma", type=float, default=2.0, help="Focusing parameter for Focal Loss")
+    parser.add_argument("--smoothing", type=float, default=0.05, help="Label smoothing epsilon")
     parser.add_argument("--reduction", type=str, default="mean")
     args = parser.parse_args()
     
@@ -404,5 +413,6 @@ if __name__ == "__main__":
         th = args.threshold,
         alpha=args.alpha,
         gamma=args.gamma,
+        smoothing=args.smoothing,
         reduction=args.reduction
     )
