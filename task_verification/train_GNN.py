@@ -126,8 +126,8 @@ if __name__ == "__main__":
     hyperparameters = {
         'visual_npz': 'step_embeddings_dataset.npz',
         'text_npz': 'text_task_graphs.npz',
-        'graph_zip': 'task_graphs',
-        'annotations_json': 'complete_step_annotations.json',
+        'graph_zip': 'annotations/task_graphs',
+        'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
         'batch_size': 64,
         'epochs': 20,
         'lr': 2e-4,
