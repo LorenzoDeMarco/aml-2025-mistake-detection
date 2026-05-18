@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 import json
 import torch
@@ -37,14 +39,15 @@ class TaskVerificationGraphDataset(Dataset):
                 
         #cache topologies to avoid runtime file system overhead
         self.graphs_topology = {}
-        with zipfile.ZipFile(graph_zip_path, 'r') as z:
+        if os.path.isdir(graph_zip_path):
             for prefix, filename in RECIPE_MAPPING.items():
-                if filename in z.namelist():
-                    with z.open(filename) as f:
+                file_path = os.path.join(graph_zip_path, filename)
+                if os.path.exists(file_path):
+                    with open(file_path, 'r') as f:
                         data = json.load(f)
                         edges = data.get('edges', [])
                         if edges:
-                            #parse into standard directed PyG edge indexes [2, Num_Edges]
+                            # Parse into standard directed PyG edge indexes [2, Num_Edges]
                             self.graphs_topology[prefix] = torch.tensor(edges, dtype=torch.long).t()
                         else:
                             self.graphs_topology[prefix] = torch.empty((2, 0), dtype=torch.long)
