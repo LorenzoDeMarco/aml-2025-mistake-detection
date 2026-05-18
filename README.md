@@ -370,3 +370,95 @@ The empirical evidence gathered from this finalized baseline proves that this pe
 To bypass this intrinsic limitation, the system must transition from a sequential attention framework to a **Graph Neural Network (GNN)** paradigm. By mapping localized action proposals directly to state nodes and constraining their connectivity through a deterministic **Procedural Task Graph**, the verification task is refactored from unconstrained temporal sequence matching into topological path validation. 
 
 In the upcoming GNN layer, cross-task semantic inversion is systematically eliminated: an execution step is no longer evaluated on fuzzy, global visual similarities, but verified through its topological validity as a valid path transition within that specific recipe’s graph. This architectural shift leverages the stable temporal features extracted by the Transformer while providing the necessary logical constraints to eliminate cross-task confusion.
+
+# 3. Methodological Extension: Multi-Modal Alignment and Hungarian Matching (Substep 3)
+
+To overcome the intrinsic limitations of semantic inversion and logical blindness observed in pure sequential Transformer architectures, Step 3 of the extension introduces a multi-modal alignment and matching module. This component combines the visual richness of temporal features with the semantic and topological constraints of CaptainCook4D Task Graphs, preparing the latent space for subsequent processing by the Graph Neural Network (GNN).
+
+## 3.1 GPU-Based Convolutional Temporal Compression
+
+The raw visual vectors extracted from Substep 1 exhibit extremely dense temporal sequences, with an average length of approximately 400 frames and maximum peaks reaching 1024 tokens per video. Computing optimal alignment directly on these shapes would entail prohibitive computational cost, while also introducing semantic misalignment (matching an entire logical concept to a single atomic video instant).
+
+To address this bottleneck, the architecture applies a **1D Convolutional Layer with Stride 4** directly at the beginning of the GPU module.
+
+**Mechanism:**  
+By configuring `in_channels=768` and `out_channels=768`, visual time is compressed by a factor of 4 (reducing the maximum sequence length from 1024 to 256 cinematic macro-tokens), while preserving the full native dimensionality of EgoVLP visual features.
+
+**Computational impact:**  
+Since the Hungarian algorithm exhibits cubic complexity, reducing sequence length by a factor of 4 decreases matching complexity by **64×**, effectively eliminating GPU idle time on the A100.
+
+---
+
+## 3.2 Integration of Fine-Grained Error Taxonomy
+
+The extension actively exploits the `text_task_graphs.npz` file. Inspection of its metadata reveals that the pre-extracted 256-dimensional textual vectors do not encode a generic static task description, but rather incorporate linguistic variations corresponding to specific procedural anomalies (*Preparation error, Technique error, Measurement error, Timing error, Temperature error*).
+
+Instead of forcing the network to align video sequences with an abstract textual sentence, the model directly couples visual kinematics with the **textual semantic signature of the specific error class**.
+
+This geometric constraint prevents the model from confusing visually similar motions performed across different recipes, suppressing cross-task interference at its root.
+
+---
+
+## 3.3 Optimal Assignment via Dynamic Hungarian Algorithm
+
+The bijective alignment between compressed visual macro-tokens ($N$) and textual graph nodes of the recipe ($M$) is formulated as a bipartite graph optimization problem, solved sample-by-sample.
+
+### 1. Temporary Metric Projection
+
+Both compressed visual features `[B, N, 768]` and textual features `[B, M, 256]` are temporarily projected into a shared geometric space of 256 channels through learnable linear layers.
+
+### 2. Cosine Similarity Matrix
+
+After L2 normalization, the scalar product between the two matrices is computed to extract angular affinity scores inherited from EgoVLP’s contrastive EgoNCE pretraining.
+
+### 3. Hungarian Algorithm Submission
+
+The similarity matrix is converted into a minimization cost matrix and processed through SciPy’s `linear_sum_assignment` function.
+
+The algorithm imposes the strict constraint that each visual macro-token can be assigned to at most one logical graph node (and vice versa), generating a contiguous batch-wise mapping vector.
+
+Dummy tokens introduced by temporal padding are neutralized by assigning them prohibitively large costs through dedicated boolean masks (`visual_mask` and `text_mask`).
+
+---
+
+## 3.4 Dual-Pathway Node Realization (Feature Fusion)
+
+Once optimal matching is established, graph node features are modified and "realized" through two independent processing channels, explicitly designed to maximize the GNN’s error-detection capability.
+
+### Pathway A: Matched Nodes
+
+If a graph node finds a correspondence in the video, its 256-dimensional textual error features are directly concatenated with the associated raw 768-dimensional visual macro-token selected by the Hungarian algorithm.
+
+This combined **1024-dimensional super-vector** is processed by a learnable fusion MLP (`matched_projection`).
+
+The layer compresses the information back to 256 channels, producing a representation that jointly encodes both:
+
+- the visual evidence of the executed action;
+- the qualitative coordinate of the anomaly committed.
+
+For example:  
+*"The mixing action was performed while violating the expected technique."*
+
+---
+
+### Pathway B: Omitted or Undetected Nodes
+
+If a mandatory recipe step does not find correspondence among the visual macro-token proposals (pure omission or localization failure), the node is routed through the `unmatched_projection` channel.
+
+Instead of actual visual features, a learnable parameter called the **Missing Visual Token** is injected.
+
+This is a 768-dimensional vector, normally initialized, whose purpose is to explicitly notify the GNN during subsequent message passing of the structural absence of a critical procedural step.
+
+This allows the network to invalidate the graph’s topological path when required.
+
+---
+
+## Output of Substep 3
+
+The final output of this substep is a dense realized node matrix of shape:
+
+\[
+[B, Max\_M\_Nodes, 256]
+\]
+
+This representation is fully denoised from sequential noise and geometrically structured for direct ingestion by the graph convolutional layers of the GNN.
