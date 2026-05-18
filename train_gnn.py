@@ -13,11 +13,11 @@ from torch.utils.data import DataLoader, Subset
 # Define the hardware accelerator
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class BinaryFocalLoss(nn.Module):
-    """
+""" class BinaryFocalLoss(nn.Module):
+    
     Differentiable Binary Focal Loss optimized for highly skewed sequence recognition.
     Down-weights easy examples to force gradient exploration into hard anomalies.
-    """
+    
     def __init__(self, alpha: float = 0.25, gamma: float = 2.0, smoothing: float = 0.05, reduction: str = 'mean'):
         super().__init__()
         self.alpha = alpha
@@ -53,7 +53,7 @@ class BinaryFocalLoss(nn.Module):
             return loss.mean()
         elif self.reduction == 'sum':
             return loss.sum()
-        return loss
+        return loss """
 
 def collate_graph_batch(batch):
     """
@@ -233,11 +233,7 @@ def train_gnn_logo(
     num_layers=2, 
     dropout=0.4, 
     weight_decay=1e-5, 
-    th=0.5,
-    alpha=0.25,
-    gamma=2.0,
-    smoothing=0.05,
-    reduction="mean"
+    th=0.5
 ):
     """
     Main training loop implementing Leave-One-Group-Out (LOGO) cross-validation.
@@ -286,7 +282,7 @@ def train_gnn_logo(
             dropout_prob=dropout
         ).to(device)
         
-        criterion = BinaryFocalLoss(alpha=alpha, gamma=gamma, smoothing=smoothing, reduction=reduction)
+        criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight_val)
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         
         # Initialize the Cosine Annealing LR scheduler
@@ -386,11 +382,6 @@ if __name__ == "__main__":
     parser.add_argument("--dropout", type=float, default=0.4, help="Dropout probability")
     parser.add_argument("--weight_decay", type=float, default=1e-5, help="L2 regularization penalty for Adam")
     
-    # Focal Loss Hyperparameters
-    parser.add_argument("--alpha", type=float, default=0.25, help="Balancing factor for Focal Loss")
-    parser.add_argument("--gamma", type=float, default=2.0, help="Focusing parameter for Focal Loss")
-    parser.add_argument("--smoothing", type=float, default=0.05, help="Label smoothing epsilon")
-    parser.add_argument("--reduction", type=str, default="mean")
     args = parser.parse_args()
     
     print("\n[Starting Graph Neural Network Training]")
@@ -410,9 +401,5 @@ if __name__ == "__main__":
         num_layers=args.num_layers,
         dropout=args.dropout,
         weight_decay=args.weight_decay,
-        th = args.threshold,
-        alpha=args.alpha,
-        gamma=args.gamma,
-        smoothing=args.smoothing,
-        reduction=args.reduction
+        th = args.threshold
     )

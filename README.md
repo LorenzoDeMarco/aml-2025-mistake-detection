@@ -361,6 +361,19 @@ While reducing the focal parameter to alpha = 0.5 and gamma = 1.0 successfully s
 
 To ensure optimal convergence under the smoother gradient trajectories induced by soft-target regularization, we updated the training optimization protocol by incorporating a **Cosine Annealing Learning Rate Scheduler**. Rather than maintaining a static learning rate of 1e-4, which often causes the DAGNN weights to oscillate destructively around tight local minima when processing boundary subgraphs, the scheduling policy dynamically decays the learning rate following a cosine curve toward a minimum floor of 1e-6 at the final epoch. This optimization trajectory allows the model to aggressively explore multimodal feature mappings during the initial training phase and subsequently perform high-precision gradient steps to anchor the decision boundaries as convergence approaches.
 
+Results with **AdamW** optimizer and **CosineAnnealingLR** scheduler:
+
+* **Accuracy: 0.5964**
+* **Precision: 0.5868**
+* **Recall: 0.5864**
+* **F1-Score: 0.5866**
+* **AUROC: 0.6205**
+* **Optimal Threshold: 0.81**  $\rightarrow$ **Best F1: 0.6056**
+
+### `BCEWithLogitsLoss` rollback
+
+The GNN baseline under LOGO cross-validation—trained with AdamW, CosineAnnealingLR, and Focal Loss—yielded poor discriminative performance (AUROC: 0.6205, F1: 0.5866) and an anomalous optimal threshold of 0.81. Notably, additional experiments incorporating label smoothing failed to yield any performance improvements, confirming a systemic calibration distortion caused by the optimization objectives. This severe logit compression justifies a structural rollback to `BCEWithLogitsLoss` with `pos_weight`. Replacing the aggressive, non-linear scaling of Focal Loss with a stable, linear class-balancing mechanism will restore a natural decision boundary around 0.50, ensuring proper gradient propagation and allowing a transparent evaluation of the network's true topological generalization.
+
 ## Acknowledgements
 
 This project builds on many repositories from the CaptainCook4D release. Please refer to the original codebases for more details.
