@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GraphConv, global_mean_pool, global_max_pool
 
-from task_verification.matching import GraphNodeRealizer
+from matching import GraphNodeRealizer
 
 
 class TaskVerificationGNN(nn.Module):
