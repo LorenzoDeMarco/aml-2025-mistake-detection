@@ -287,7 +287,7 @@ def train_gnn_logo(
         ).to(device)
         
         criterion = BinaryFocalLoss(alpha=alpha, gamma=gamma, smoothing=smoothing, reduction=reduction)
-        optimizer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
         
         # Initialize the Cosine Annealing LR scheduler
         # T_max is set to num_epochs (the total budget of epochs per fold)
