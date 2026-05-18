@@ -56,7 +56,7 @@ def train_loo(fold_id, train_ids, test_ids, args):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
     
     #BCE with 0.1 Label Smoothing factor to regularize logit distributions
-    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([1.2], device=device), reduction='mean')
+    criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
 
     #training loop
@@ -76,12 +76,15 @@ def train_loo(fold_id, train_ids, test_ids, args):
             smoothed_labels = labels * (1.0 - label_smoothing) + 0.5 * label_smoothing
             
             optimizer.zero_grad()
-            logits = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
-            loss = criterion(logits, smoothed_labels)
+            logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
+            classification_loss = criterion(logits, smoothed_labels)
+
+            #scaled auxiliary injection (alpha = 0.1 balances classification and metrics alignment)
+            total_loss = classification_loss + 0.1 * align_loss
             
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
-            train_loss += loss.item() * vis_feat.size(0)
+            train_loss += total_loss.item() * vis_feat.size(0)
             
         scheduler.step()
         epoch_loss = train_loss / len(train_dataset)
@@ -102,7 +105,7 @@ def train_loo(fold_id, train_ids, test_ids, args):
             edge_idx_list = batch["edge_indices"]
             labels = batch["labels"]
             
-            logits = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
+            logits, _ = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
             probs = torch.sigmoid(logits).cpu().numpy()
             
             test_probs.extend(probs)

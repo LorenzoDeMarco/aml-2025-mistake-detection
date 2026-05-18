@@ -48,7 +48,7 @@ class TaskVerificationGNN(nn.Module):
         device = visual_features.device
         
         #node feature realization -> [B, Max_M, 256]
-        realized_nodes = self.node_realizer(visual_features, text_features, visual_mask, text_mask)
+        realized_nodes, align_loss = self.node_realizer(visual_features, text_features, visual_mask, text_mask)
         
         # graph batching (unrolling dense representations into flat tensors)
         x_list = []
@@ -100,4 +100,4 @@ class TaskVerificationGNN(nn.Module):
         
         # compute anomaly logits
         logits = self.classification_head(graph_embedding)
-        return logits.squeeze(-1)
+        return logits.squeeze(-1), align_loss
