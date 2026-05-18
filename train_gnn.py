@@ -18,13 +18,21 @@ class BinaryFocalLoss(nn.Module):
     Differentiable Binary Focal Loss optimized for highly skewed sequence recognition.
     Down-weights easy examples to force gradient exploration into hard anomalies.
     """
-    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, reduction: str = 'mean'):
+    def __init__(self, alpha: float = 0.25, gamma: float = 2.0, smoothing: float = 0.05, reduction: str = 'mean'):
         super().__init__()
         self.alpha = alpha
         self.gamma = gamma
+        self.smoothing = smoothing
         self.reduction = reduction
 
     def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        # x shape / logits shape: (Batch_Size,) or matching targets shape
+        
+        # Apply mild label smoothing to soften strict targets from {0, 1} to {0.05, 0.95}
+        # This prevents the downstream sigmoid function from oversaturating 
+        with torch.no_grad():
+            smoothed_targets = targets * (1.0 - self.smoothing) + 0.5 * self.smoothing
+            
         # Standard stable element-wise binary cross entropy
         bce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
         
