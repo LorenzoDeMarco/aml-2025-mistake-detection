@@ -9,8 +9,8 @@ import numpy as np
 import wandb
 import pandas as pd
 
-from dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
-from GNN import TaskVerificationGNN
+from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
+from task_verification.GNN import TaskVerificationGNN
 
 def train_loo(fold_id, train_ids, test_ids, args):
     wandb.init(
