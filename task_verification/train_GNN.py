@@ -42,11 +42,11 @@ def train_loo(fold_id, train_ids, test_ids, args):
     
     train_loader = DataLoader(
         train_dataset, batch_size=args['batch_size'], shuffle=True,
-        num_workers=4, collate_fn=graph_collate_fn, pin_memory=True
+        collate_fn=graph_collate_fn
     )
     test_loader = DataLoader(
         test_dataset, batch_size=args['batch_size'], shuffle=False,
-        num_workers=2, collate_fn=graph_collate_fn, pin_memory=True
+        collate_fn=graph_collate_fn
     )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
