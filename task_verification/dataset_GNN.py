@@ -16,7 +16,7 @@ RECIPE_MAPPING = {
 }
 
 class TaskVerificationGraphDataset(Dataset):
-    def __init__(self, preloaded_visual, preloaded_text, graph_zip_path, annotations_path, video_ids, split='train'):
+    def __init__(self, preloaded_visual, preloaded_text, preloaded_matches, graph_zip_path, annotations_path, video_ids, split='train'):
         self.split = split
         
         with open(annotations_path, 'r') as f:
@@ -24,12 +24,14 @@ class TaskVerificationGraphDataset(Dataset):
             
         self.visual_features = {}
         self.text_features = {}
+        self.matches = {}
         self.video_list = []
         
         for vid in video_ids:
-            if vid in preloaded_visual and vid in preloaded_text and vid in self.annotations:
+            if vid in preloaded_visual and vid in preloaded_text and vid in preloaded_matches and vid in self.annotations:
                 self.visual_features[vid] = preloaded_visual[vid]
                 self.text_features[vid] = preloaded_text[vid]
+                self.matches[vid] = preloaded_matches[vid]
                 self.video_list.append(vid)
                 
         self.recipe_edges = {}
@@ -51,6 +53,7 @@ class TaskVerificationGraphDataset(Dataset):
         
         vis_feat = self.visual_features[video_id]
         text_feat = self.text_features[video_id]
+        raw_match = self.matches[video_id] 
         video_steps = self.annotations[video_id]['steps']
         
         #dynamic video-level edge index remapping
@@ -78,6 +81,7 @@ class TaskVerificationGraphDataset(Dataset):
             "video_id": video_id,
             "visual_features": torch.tensor(vis_feat),
             "text_features": torch.tensor(text_feat),
+            "precomputed_match": torch.tensor(raw_match, dtype=torch.long),
             "edge_index": edge_index,
             "label": torch.tensor(label, dtype=torch.float32)
         }
@@ -86,6 +90,7 @@ def graph_collate_fn(batch):
     video_ids = [item["video_id"] for item in batch]
     labels = torch.stack([item["label"] for item in batch])
     edge_indices = [item["edge_index"] for item in batch]
+    precomputed_matches = [item["precomputed_match"] for item in batch]
     
     #pad visual representations -> [B, Max_N_Steps, 768]
     visual_tensors = [item["visual_features"] for item in batch]
@@ -113,6 +118,7 @@ def graph_collate_fn(batch):
         "video_ids": video_ids,
         "visual_features": batched_visual,
         "text_features": batched_text,
+        "precomputed_matches": precomputed_matches,
         "visual_mask": visual_mask,
         "text_mask": text_mask,
         "edge_indices": edge_indices,

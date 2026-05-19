@@ -2,7 +2,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GraphConv, global_mean_pool, global_max_pool
+
 from task_verification.matching import GraphNodeRealizer
+
 
 class TaskVerificationGNN(nn.Module):
     def __init__(self, visual_dim=768, text_dim=256, hidden_dim=256, dropout=0.4):
@@ -36,7 +38,7 @@ class TaskVerificationGNN(nn.Module):
             nn.Linear(hidden_dim // 2, 1)
         )
 
-    def forward(self, visual_features, text_features, visual_mask, text_mask, edge_indices):
+    def forward(self, visual_features, text_features, visual_mask, text_mask, edge_indices, precomputed_matches):
         """
         Args:
             visual_features: [B, Max_N, 768]
@@ -44,12 +46,13 @@ class TaskVerificationGNN(nn.Module):
             visual_mask: [B, Max_N]
             text_mask: [B, Max_M]
             edge_indices: List of length B containing [2, E_i] tensors
+            precomputed_matches: List of pre-computed indexing tensors
         """
         batch_size = visual_features.size(0)
         device = visual_features.device
         
         # node feature realization -> [B, Max_M, 256]
-        realized_nodes, align_loss = self.node_realizer(visual_features, text_features, visual_mask, text_mask)
+        realized_nodes, align_loss = self.node_realizer(visual_features, text_features, visual_mask, text_mask, precomputed_matches)
         
         # graph batching (unrolling dense representations into flat tensors)
         x_list = []

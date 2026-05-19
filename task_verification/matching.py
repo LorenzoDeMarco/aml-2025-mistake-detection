@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from scipy.optimize import linear_sum_assignment
 
 class GraphNodeRealizer(nn.Module):
     def __init__(self, visual_dim=768, text_dim=256, joint_dim=256, dropout=0.4):
@@ -10,7 +9,7 @@ class GraphNodeRealizer(nn.Module):
         """
         super(GraphNodeRealizer, self).__init__()
         
-        #Conv1d (Stride 4 with explicit protective padding)
+        # Conv1d (Stride 4 with padding)
         self.temporal_conv = nn.Conv1d(
             in_channels=visual_dim,
             out_channels=visual_dim,
@@ -19,6 +18,7 @@ class GraphNodeRealizer(nn.Module):
             padding=1
         )
         
+        #metric space mapping projections
         self.sim_visual_proj = nn.Linear(visual_dim, joint_dim)
         self.sim_text_proj = nn.Linear(text_dim, joint_dim)
         
@@ -44,14 +44,13 @@ class GraphNodeRealizer(nn.Module):
         self.missing_visual_embedding = nn.Parameter(torch.zeros(1, visual_dim))
         nn.init.normal_(self.missing_visual_embedding, std=0.02)
 
-    def forward(self, visual_features, text_features, visual_mask, text_mask):
+    def forward(self, visual_features, text_features, visual_mask, text_mask, precomputed_matches):
         batch_size, max_m, text_dim = text_features.shape
         device = visual_features.device
         
         # dynamic temporal pooling step
         vis_transposed = visual_features.transpose(1, 2)
         compressed_vis = self.temporal_conv(vis_transposed).transpose(1, 2)
-        compressed_mask = visual_mask[:, ::4][:, :compressed_vis.size(1)]
         comp_n = compressed_vis.size(1)
         
         # project modalities into common space
@@ -65,30 +64,32 @@ class GraphNodeRealizer(nn.Module):
         valid_batch_counts = 0
         
         for b in range(batch_size):
-            num_vis = int(compressed_mask[b].sum().item())
-            num_text = int(text_mask[b].sum().item())
+
+            match_indices = precomputed_matches[b]
+            v_idx = match_indices[0]
+            t_idx = match_indices[1]
             
             node_mapping = torch.full((max_m,), fill_value=comp_n, dtype=torch.long, device=device)
             is_matched_node = torch.zeros(max_m, dtype=torch.bool, device=device)
             
-            if num_vis > 0 and num_text > 0:
-                v_norm = F.normalize(proj_v[b, :num_vis], p=2, dim=-1)
-                t_norm = F.normalize(proj_t[b, :num_text], p=2, dim=-1)
+            if len(v_idx) > 0:
+                #differentiable calculation of the cosine matrix on GPU
+                v_norm = F.normalize(proj_v[b, v_idx], p=2, dim=-1)
+                t_norm = F.normalize(proj_t[b, t_idx], p=2, dim=-1)
+                matched_sims = (v_norm * t_norm).sum(dim=-1)
                 
-                similarity_matrix = torch.mm(v_norm, t_norm.t())
-                cost_matrix = 1.0 - similarity_matrix.detach().cpu().numpy()
+                aux_alignment_loss += -matched_sims.mean()
+                valid_batch_counts += 1
                 
-                v_idx, t_idx = linear_sum_assignment(cost_matrix)
+                #dynamic threshold mask operations
+                valid_threshold_mask = matched_sims >= 0.20
+                valid_t = t_idx[valid_threshold_mask]
+                valid_v = v_idx[valid_threshold_mask]
                 
-                if len(v_idx) > 0:
-                    aux_alignment_loss += -similarity_matrix[v_idx, t_idx].mean()
-                    valid_batch_counts += 1
+                if valid_t.numel() > 0:
+                    node_mapping[valid_t] = valid_v
+                    is_matched_node[valid_t] = True
                     
-                    for v_i, t_i in zip(v_idx, t_idx):
-                        if similarity_matrix[v_i, t_i] >= 0.20:
-                            node_mapping[t_i] = v_i
-                            is_matched_node[t_i] = True
-                            
             gathered_vis = extended_visual[b, node_mapping]
             fused_raw_inputs = torch.cat([gathered_vis, text_features[b]], dim=-1)
             

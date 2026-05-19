@@ -11,8 +11,9 @@ import pandas as pd
 from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
 from task_verification.GNN import TaskVerificationGNN
 
-def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
 
+def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, global_matches, args):
+    
     wandb.init(
         project="aml-mistake-detection-gnn",
         name=f"LOO_Fold_{fold_id}",
@@ -21,10 +22,11 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
         mode="online"
     )
     
-    #graph-aware datasets
+    #graph-aware datasets using preloaded RAM features
     train_dataset = TaskVerificationGraphDataset(
         preloaded_visual=global_visual,
         preloaded_text=global_text,
+        preloaded_matches=global_matches,
         graph_zip_path=args['graph_zip'],
         annotations_path=args['annotations_json'],
         video_ids=train_ids,
@@ -34,6 +36,7 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
     test_dataset = TaskVerificationGraphDataset(
         preloaded_visual=global_visual,
         preloaded_text=global_text,
+        preloaded_matches=global_matches,
         graph_zip_path=args['graph_zip'],
         annotations_path=args['annotations_json'],
         video_ids=test_ids,
@@ -49,13 +52,14 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
         num_workers=2, collate_fn=graph_collate_fn, pin_memory=True
     )
     
+    
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TaskVerificationGNN(dropout=args['dropout']).to(device)
     
     optimizer = optim.AdamW(model.parameters(), lr=args['lr'], weight_decay=args['weight_decay'])
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
     
-    # symmetric binary cross entropy with label smoothing 
+    #symmetric binary cross entropy with label smoothing 
     criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
 
@@ -69,14 +73,15 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
             text_feat = batch["text_features"].to(device)
             vis_mask = batch["visual_mask"].to(device)
             text_mask = batch["text_mask"].to(device)
-            edge_idx_list = batch["edge_indices"]
+            edge_idx_list = batch["edge_indices"] 
+            precomputed_matches = batch["precomputed_matches"]
             labels = batch["labels"].to(device)
             
-            #label smoothing -> [0.1, 0.9]
+            # label smoothing -> [0.1, 0.9]
             smoothed_labels = labels * (1.0 - label_smoothing) + label_smoothing / 2.0
             
             optimizer.zero_grad()
-            logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
+            logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list, precomputed_matches)
             
             classification_loss = criterion(logits, smoothed_labels)
             total_loss = classification_loss + 0.1 * align_loss
@@ -89,7 +94,7 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
         epoch_loss = train_loss / len(train_dataset)
         wandb.log({"train/loss": epoch_loss, "train/lr": scheduler.get_last_lr()[0], "epoch": epoch})
         
-    # validation (Leave-One-Out Evaluation)
+    #validation (Leave-One-Out Evaluation)
     model.eval()
     test_probs = []
     test_gts = []
@@ -102,9 +107,10 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
             vis_mask = batch["visual_mask"].to(device)
             text_mask = batch["text_mask"].to(device)
             edge_idx_list = batch["edge_indices"]
+            precomputed_matches = batch["precomputed_matches"]
             labels = batch["labels"]
             
-            logits, _ = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
+            logits, _ = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list, precomputed_matches)
             probs = torch.sigmoid(logits).cpu().numpy()
             
             test_probs.extend(probs)
@@ -127,6 +133,7 @@ if __name__ == "__main__":
     hyperparameters = {
         'visual_npz': 'step_embeddings_dataset.npz',
         'text_npz': 'text_task_graphs.npz',
+        'matches_npz': 'hungarian_matches.npz',
         'graph_zip': 'task_graphs',
         'annotations_json': 'complete_step_annotations.json',
         'batch_size': 64,
@@ -136,7 +143,8 @@ if __name__ == "__main__":
         'dropout': 0.4
     }
     
-    print("Executing loading of datasets...")
+   
+    print("Executing RAM caching ...")
     global_visual = {}
     with np.load(hyperparameters['visual_npz']) as data:
         for k in data.files:
@@ -146,6 +154,14 @@ if __name__ == "__main__":
     with np.load(hyperparameters['text_npz']) as data:
         for k in data.files:
             global_text[k.replace('.npy', '')] = data[k].astype(np.float32)
+            
+    global_matches = {}
+    if not os.path.exists(hyperparameters['matches_npz']):
+        raise FileNotFoundError(f"Please run 'python -m task_verification.precompute_matching' once to generate {hyperparameters['matches_npz']} before training.")
+        
+    with np.load(hyperparameters['matches_npz']) as data:
+        for k in data.files:
+            global_matches[k.replace('.npy', '')] = data[k]
             
     #load all unique video keys to perform the Leave-One-Out Cross Validation
     all_video_ids = sorted(list(global_visual.keys()))
@@ -157,7 +173,7 @@ if __name__ == "__main__":
         train_ids = [vid for vid in all_video_ids if vid != test_id]
         test_ids = [test_id]
         
-        vid_key, gt, pred_prob = train_loo(fold, train_ids, test_ids, global_visual, global_text, hyperparameters)
+        vid_key, gt, pred_prob = train_loo(fold, train_ids, test_ids, global_visual, global_text, global_matches, hyperparameters)
         pred_class = 1 if pred_prob >= 0.5 else 0
         
         progress_records.append({
@@ -168,12 +184,12 @@ if __name__ == "__main__":
         })
         print(f"Fold {fold+1}/{len(all_video_ids)} | Video: {vid_key} | GT: {gt} | Prob: {pred_prob:.4f}")
         
-        #iterative checkpoints
+        #iterative checkpoint 
         if (fold + 1) % 5 == 0 or (fold + 1) == len(all_video_ids):
             df_progress = pd.DataFrame(progress_records)
             df_progress.to_csv("loo_gnn_error_analysis.csv", index=False)
             
-        # final global performance
+        #final global performance
         if (fold + 1) == len(all_video_ids):
             df_progress = pd.DataFrame(progress_records)
             y_true = df_progress['ground_truth'].values
@@ -188,7 +204,7 @@ if __name__ == "__main__":
             
             print("\n================ FINAL GLOBAL GNN PERFORMANCE EVALUATION ================")
             print(f"wandb: Final_AUROC {final_auroc:.5f}")
-            print(f"wandb:   Final_Acc {final_acc:.5f}")
+            print(f"wandz:   Final_Acc {final_acc:.5f}")
             print(f"wandb:    Final_F1 {final_f1:.5f}")
             print(f"wandb:  Final_Prec {final_prec:.5f}")
             print(f"wandb:   Final_Rec {final_rec:.5f}")
