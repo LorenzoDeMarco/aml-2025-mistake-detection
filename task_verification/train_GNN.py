@@ -8,11 +8,11 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import numpy as np
 import wandb
 import pandas as pd
-
 from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
 from task_verification.GNN import TaskVerificationGNN
 
-def train_loo(fold_id, train_ids, test_ids, args):
+def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
+
     wandb.init(
         project="aml-mistake-detection-gnn",
         name=f"LOO_Fold_{fold_id}",
@@ -23,8 +23,8 @@ def train_loo(fold_id, train_ids, test_ids, args):
     
     #graph-aware datasets
     train_dataset = TaskVerificationGraphDataset(
-        visual_npz_path=args['visual_npz'],
-        text_npz_path=args['text_npz'],
+        preloaded_visual=global_visual,
+        preloaded_text=global_text,
         graph_zip_path=args['graph_zip'],
         annotations_path=args['annotations_json'],
         video_ids=train_ids,
@@ -32,8 +32,8 @@ def train_loo(fold_id, train_ids, test_ids, args):
     )
     
     test_dataset = TaskVerificationGraphDataset(
-        visual_npz_path=args['visual_npz'],
-        text_npz_path=args['text_npz'],
+        preloaded_visual=global_visual,
+        preloaded_text=global_text,
         graph_zip_path=args['graph_zip'],
         annotations_path=args['annotations_json'],
         video_ids=test_ids,
@@ -42,11 +42,11 @@ def train_loo(fold_id, train_ids, test_ids, args):
     
     train_loader = DataLoader(
         train_dataset, batch_size=args['batch_size'], shuffle=True,
-        collate_fn=graph_collate_fn
+        num_workers=4, collate_fn=graph_collate_fn, pin_memory=True
     )
     test_loader = DataLoader(
         test_dataset, batch_size=args['batch_size'], shuffle=False,
-        collate_fn=graph_collate_fn
+        num_workers=2, collate_fn=graph_collate_fn, pin_memory=True
     )
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -55,7 +55,7 @@ def train_loo(fold_id, train_ids, test_ids, args):
     optimizer = optim.AdamW(model.parameters(), lr=args['lr'], weight_decay=args['weight_decay'])
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
     
-    #BCE with 0.1 Label Smoothing factor to regularize logit distributions
+    # symmetric binary cross entropy with label smoothing 
     criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
 
@@ -69,28 +69,27 @@ def train_loo(fold_id, train_ids, test_ids, args):
             text_feat = batch["text_features"].to(device)
             vis_mask = batch["visual_mask"].to(device)
             text_mask = batch["text_mask"].to(device)
-            edge_idx_list = batch["edge_indices"] 
+            edge_idx_list = batch["edge_indices"]
             labels = batch["labels"].to(device)
             
-            #amooth binary targets: 1 -> 0.9, 0 -> 0.1
-            smoothed_labels = labels * (1.0 - label_smoothing) + 0.5 * label_smoothing
+            #label smoothing -> [0.1, 0.9]
+            smoothed_labels = labels * (1.0 - label_smoothing) + label_smoothing / 2.0
             
             optimizer.zero_grad()
             logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
+            
             classification_loss = criterion(logits, smoothed_labels)
-
-            #scaled auxiliary injection (alpha = 0.1 balances classification and metrics alignment)
             total_loss = classification_loss + 0.1 * align_loss
             
             total_loss.backward()
             optimizer.step()
-            train_loss += total_loss.item() * vis_feat.size(0)
+            train_loss += classification_loss.item() * vis_feat.size(0)
             
         scheduler.step()
         epoch_loss = train_loss / len(train_dataset)
         wandb.log({"train/loss": epoch_loss, "train/lr": scheduler.get_last_lr()[0], "epoch": epoch})
         
-    # validatin
+    # validation (Leave-One-Out Evaluation)
     model.eval()
     test_probs = []
     test_gts = []
@@ -125,12 +124,11 @@ def train_loo(fold_id, train_ids, test_ids, args):
 
 if __name__ == "__main__":
     
-
     hyperparameters = {
         'visual_npz': 'step_embeddings_dataset.npz',
         'text_npz': 'text_task_graphs.npz',
-        'graph_zip': 'annotations/task_graphs',
-        'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
+        'graph_zip': 'task_graphs',
+        'annotations_json': 'complete_step_annotations.json',
         'batch_size': 64,
         'epochs': 20,
         'lr': 2e-4,
@@ -138,8 +136,19 @@ if __name__ == "__main__":
         'dropout': 0.4
     }
     
-    all_features = np.load(hyperparameters['visual_npz'])
-    all_video_ids = sorted(list(all_features.keys()))
+    print("Executing loading of datasets...")
+    global_visual = {}
+    with np.load(hyperparameters['visual_npz']) as data:
+        for k in data.files:
+            global_visual[k.replace('.npy', '')] = data[k].astype(np.float32)
+            
+    global_text = {}
+    with np.load(hyperparameters['text_npz']) as data:
+        for k in data.files:
+            global_text[k.replace('.npy', '')] = data[k].astype(np.float32)
+            
+    #load all unique video keys to perform the Leave-One-Out Cross Validation
+    all_video_ids = sorted(list(global_visual.keys()))
     
     progress_records = []
     print(f"Starting Leave-One-Out Validation across {len(all_video_ids)} folds on A100 node.")
@@ -148,7 +157,7 @@ if __name__ == "__main__":
         train_ids = [vid for vid in all_video_ids if vid != test_id]
         test_ids = [test_id]
         
-        vid_key, gt, pred_prob = train_loo(fold, train_ids, test_ids, hyperparameters)
+        vid_key, gt, pred_prob = train_loo(fold, train_ids, test_ids, global_visual, global_text, hyperparameters)
         pred_class = 1 if pred_prob >= 0.5 else 0
         
         progress_records.append({
@@ -159,12 +168,14 @@ if __name__ == "__main__":
         })
         print(f"Fold {fold+1}/{len(all_video_ids)} | Video: {vid_key} | GT: {gt} | Prob: {pred_prob:.4f}")
         
+        #iterative checkpoints
         if (fold + 1) % 5 == 0 or (fold + 1) == len(all_video_ids):
             df_progress = pd.DataFrame(progress_records)
             df_progress.to_csv("loo_gnn_error_analysis.csv", index=False)
             
-        #final summary
+        # final global performance
         if (fold + 1) == len(all_video_ids):
+            df_progress = pd.DataFrame(progress_records)
             y_true = df_progress['ground_truth'].values
             y_pred = df_progress['prediction'].values
             y_prob = df_progress['probability'].values

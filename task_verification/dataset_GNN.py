@@ -1,10 +1,9 @@
 import os
 import json
 import torch
-import numpy as np
 from torch.utils.data import Dataset
 
-# Official mapping between video prefix and CaptainCook4D task graph JSON files
+#official mapping between video prefix and CaptainCook4D task graph JSON files (annotations/task_graphs/)
 RECIPE_MAPPING = {
     '1': 'microwaveeggsandwich.json', '2': 'dressedupmeatballs.json', '3': 'microwavemugpizza.json',
     '4': 'ramen.json', '5': 'coffee.json', '7': 'breakfastburritos.json',
@@ -17,30 +16,21 @@ RECIPE_MAPPING = {
 }
 
 class TaskVerificationGraphDataset(Dataset):
-    def __init__(self, visual_npz_path, text_npz_path, graph_zip_path, annotations_path, video_ids, split='train'):
-        """
-        Graph-Aware Dataset optimized for Multi-Modal Procedural Mistake Detection.
-        Uses on-the-fly np.load calls to remain process-safe during multi-worker execution.
-        """
+    def __init__(self, preloaded_visual, preloaded_text, graph_zip_path, annotations_path, video_ids, split='train'):
         self.split = split
-        self.visual_npz_path = visual_npz_path
-        self.text_npz_path = text_npz_path
         
         with open(annotations_path, 'r') as f:
             self.annotations = json.load(f)
             
-        with np.load(visual_npz_path) as vis_data:
-            vis_keys = set(k.replace('.npy', '') for k in vis_data.files)
-            
-        with np.load(text_npz_path) as text_data:
-            text_keys = set(k.replace('.npy', '') for k in text_data.files)
-            
+        self.visual_features = {}
+        self.text_features = {}
         self.video_list = []
+        
         for vid in video_ids:
-            if vid in vis_keys and vid in text_keys and vid in self.annotations:
+            if vid in preloaded_visual and vid in preloaded_text and vid in self.annotations:
+                self.visual_features[vid] = preloaded_visual[vid]
+                self.text_features[vid] = preloaded_text[vid]
                 self.video_list.append(vid)
-                
-        print(f"[{split.upper()}] Dataset initialized via np.load. Total active samples: {len(self.video_list)}")
                 
         self.recipe_edges = {}
         base_graph_dir = graph_zip_path if os.path.isdir(graph_zip_path) else 'task_graphs'
@@ -59,17 +49,11 @@ class TaskVerificationGraphDataset(Dataset):
         video_id = self.video_list[idx]
         recipe_prefix = video_id.split('_')[0]
         
-        with np.load(self.visual_npz_path) as vis_data:
-            vis_feat = vis_data[video_id].astype(np.float32)
-            
-        #.npy extension
-        with np.load(self.text_npz_path) as text_data:
-            text_key = video_id if video_id in text_data else f"{video_id}.npy"
-            text_feat = text_data[text_key].astype(np.float32)
-            
+        vis_feat = self.visual_features[video_id]
+        text_feat = self.text_features[video_id]
         video_steps = self.annotations[video_id]['steps']
         
-        # Dynamic Video-Level Edge Index Remapping
+        #dynamic video-level edge index remapping
         step_id_to_local_idx = {int(s['step_id']): i for i, s in enumerate(video_steps)}
         
         raw_edges = self.recipe_edges.get(recipe_prefix, [])
