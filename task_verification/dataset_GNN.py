@@ -74,18 +74,6 @@ class TaskVerificationGraphDataset(Dataset):
         # Example: [1, 2, 3, ..., N]
         node_id_to_local = {nid: i for i, nid in enumerate(valid_ids)}
 
-        # DEBUG 
-        if idx < 3:
-            print(f"\n[DEBUG] video={video_id} prefix={recipe_prefix}")
-            print(f"  valid_ids: {valid_ids}")
-            print(f"  raw_edges[:5]: {raw_edges[:5]}")
-            print(f"  node_id_to_local: {node_id_to_local}")
-        if raw_edges:
-            src, dst = raw_edges[0]
-            print(f"  first edge: src={src} (type={type(src)}), dst={dst} (type={type(dst)})")
-            print(f"  src in map: {src in node_id_to_local}, dst in map: {dst in node_id_to_local}")
-    
-
         remapped_edges = []
 
         for src, dst in raw_edges:
