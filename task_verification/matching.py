@@ -1,15 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from scipy.optimize import linear_sum_assignment
 
 class GraphNodeRealizer(nn.Module):
     def __init__(self, visual_dim=768, text_dim=256, joint_dim=256, dropout=0.4):
-        """
-        Video context token alignment with Hungarian Graph matching.
-        """
         super(GraphNodeRealizer, self).__init__()
         
-        # Conv1d (Stride 4 with padding)
         self.temporal_conv = nn.Conv1d(
             in_channels=visual_dim,
             out_channels=visual_dim,
@@ -18,11 +15,9 @@ class GraphNodeRealizer(nn.Module):
             padding=1
         )
         
-        #metric space mapping projections
         self.sim_visual_proj = nn.Linear(visual_dim, joint_dim)
         self.sim_text_proj = nn.Linear(text_dim, joint_dim)
         
-        #dual-pathway fusion experts heads
         self.matched_projection = nn.Sequential(
             nn.Linear(visual_dim + text_dim, joint_dim * 2),
             nn.ReLU(),
@@ -40,20 +35,18 @@ class GraphNodeRealizer(nn.Module):
             nn.LayerNorm(joint_dim)
         )
         
-        #learnable missing visual token
         self.missing_visual_embedding = nn.Parameter(torch.zeros(1, visual_dim))
         nn.init.normal_(self.missing_visual_embedding, std=0.02)
 
-    def forward(self, visual_features, text_features, visual_mask, text_mask, precomputed_matches):
+    def forward(self, visual_features, text_features, visual_mask, text_mask):
         batch_size, max_m, text_dim = text_features.shape
         device = visual_features.device
         
-        # dynamic temporal pooling step
         vis_transposed = visual_features.transpose(1, 2)
         compressed_vis = self.temporal_conv(vis_transposed).transpose(1, 2)
+        compressed_mask = visual_mask[:, ::4][:, :compressed_vis.size(1)]
         comp_n = compressed_vis.size(1)
         
-        # project modalities into common space
         proj_v = self.sim_visual_proj(compressed_vis)
         proj_t = self.sim_text_proj(text_features)
         
@@ -64,32 +57,40 @@ class GraphNodeRealizer(nn.Module):
         valid_batch_counts = 0
         
         for b in range(batch_size):
-
-            match_indices = precomputed_matches[b].to(device)
-            v_idx = match_indices[0]
-            t_idx = match_indices[1]
+            num_vis = int(compressed_mask[b].sum().item())
+            num_text = int(text_mask[b].sum().item())
             
             node_mapping = torch.full((max_m,), fill_value=comp_n, dtype=torch.long, device=device)
             is_matched_node = torch.zeros(max_m, dtype=torch.bool, device=device)
             
-            if len(v_idx) > 0:
-                #differentiable calculation of the cosine matrix on GPU
-                v_norm = F.normalize(proj_v[b, v_idx], p=2, dim=-1)
-                t_norm = F.normalize(proj_t[b, t_idx], p=2, dim=-1)
-                matched_sims = (v_norm * t_norm).sum(dim=-1)
+            if num_vis > 0 and num_text > 0:
+                v_norm = F.normalize(proj_v[b, :num_vis], p=2, dim=-1)
+                t_norm = F.normalize(proj_t[b, :num_text], p=2, dim=-1)
+                similarity_matrix = torch.mm(v_norm, t_norm.t())
                 
-                aux_alignment_loss += -matched_sims.mean()
-                valid_batch_counts += 1
+                # CPU Fast Hungarian 
+                cost_matrix = 1.0 - similarity_matrix.detach().cpu().numpy()
+                v_idx, t_idx = linear_sum_assignment(cost_matrix)
                 
-                #dynamic threshold mask operations
-                valid_threshold_mask = matched_sims >= 0.20
-                valid_t = t_idx[valid_threshold_mask]
-                valid_v = v_idx[valid_threshold_mask]
-                
-                if valid_t.numel() > 0:
-                    node_mapping[valid_t] = valid_v
-                    is_matched_node[valid_t] = True
+                if len(v_idx) > 0:
+                    v_idx_t = torch.tensor(v_idx, device=device)
+                    t_idx_t = torch.tensor(t_idx, device=device)
                     
+                    # Differentiable GPU tracking
+                    matched_sims = similarity_matrix[v_idx_t, t_idx_t]
+                    aux_alignment_loss += -matched_sims.mean()
+                    valid_batch_counts += 1
+                    
+                    threshold_mask = matched_sims >= 0.20
+                    safe_t = torch.where(threshold_mask, t_idx_t, torch.tensor(-1, device=device))
+                    
+                    valid_positions = safe_t >= 0
+                    if valid_positions.any():
+                        active_t = t_idx_t[valid_positions]
+                        active_v = v_idx_t[valid_positions]
+                        node_mapping[active_t] = active_v
+                        is_matched_node[active_t] = True
+                        
             gathered_vis = extended_visual[b, node_mapping]
             fused_raw_inputs = torch.cat([gathered_vis, text_features[b]], dim=-1)
             
