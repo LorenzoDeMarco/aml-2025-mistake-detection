@@ -32,28 +32,24 @@ SKIP_TOKENS = {'START', 'END'}
 
 def load_egovlp_text_encoder(checkpoint_path, device):
     """
-    Loads only the text branch of EgoVLP (FrozenInTime).
-    The ViT video backbone tries to load a local ImageNet checkpoint at init time
-    — we patch torch.load to return an empty dict for that specific file so the
-    video branch initializes with zeros (it will be ignored anyway).
+    Loads EgoVLP text encoder from the official pretrained checkpoint.
+
+    The checkpoint (egovlp.pth) stores a full training state under the key
+    'state_dict'. The model config must match the pretraining setup exactly.
+    Text output dim: 256 (projected from DistilBERT 768 via a linear head).
+    Visual and text embeddings are in the same aligned 256-dim space.
+
+    Checkpoint download:
+      https://drive.google.com/file/d/1-cP3Gcg0NGDcMZalgJ_615BQdbFIbcj7
+      Place it at: pretrained/egovlp.pth
     """
-    import unittest.mock as mock
-
-    original_torch_load = torch.load
-
-    def patched_load(path, *args, **kwargs):
-        # Intercept only the ViT ImageNet checkpoint — let everything else through
-        if isinstance(path, str) and "jx_vit_base_p16_224" in path:
-            print(f"  [patch] Skipping ViT ImageNet init: {path}")
-            return {}   # empty state dict — video branch unused
-        return original_torch_load(path, *args, **kwargs)
-
+    # EgoVLP pretraining config — must match checkpoint architecture exactly
     model_config = {
         "video_params": {
             "model": "SpaceTimeTransformer",
             "arch_config": "base_patch16_224",
             "num_frames": 16,
-            "pretrained": False,
+            "pretrained": False,   # ImageNet init not needed, we load full checkpoint
             "time_init": "zeros"
         },
         "text_params": {
@@ -62,28 +58,28 @@ def load_egovlp_text_encoder(checkpoint_path, device):
             "input": "text"
         },
         "projection_dim": 256,
-        "load_checkpoint": None
+        "load_checkpoint": None    # we handle loading manually below
     }
 
-    # Patch torch.load only during model construction
-    with mock.patch("torch.load", side_effect=patched_load):
-        model = FrozenInTime(**model_config)
+    model = FrozenInTime(**model_config)
 
-    # Now load EgoVLP pretrained weights normally
+    # egovlp.pth stores the full training state — extract only model weights
     checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    state_dict = checkpoint.get("state_dict", checkpoint)
+    if "state_dict" in checkpoint:
+        state_dict = checkpoint["state_dict"]
+    else:
+        state_dict = checkpoint  # fallback if already a plain state_dict
 
+    # strict=False ignores video-branch keys we don't need for text encoding
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
-    print(f"Checkpoint loaded — missing: {len(missing)}, unexpected: {len(unexpected)}")
-
-    # Keep only text branch in memory — free video branch weights
-    model.video_model = None
+    print(f"Checkpoint loaded — missing keys: {len(missing)}, unexpected: {len(unexpected)}")
 
     model.eval().to(device)
+
+    # DistilBERT tokenizer — same one used during EgoVLP pretraining
     tokenizer = AutoTokenizer.from_pretrained("distilbert-base-uncased")
 
     return model, tokenizer
-
 
 def encode_texts(texts, model, tokenizer, device, batch_size=64):
     """
