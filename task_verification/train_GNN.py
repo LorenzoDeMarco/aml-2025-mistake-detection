@@ -114,6 +114,13 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
         "test/prediction": pred_class,
         "test/is_correct": int(pred_class == int(test_gts[0]))
     })
+
+    #DEBUGGING SANITY CHECKS
+    print(f"\n[SANITY] Fold {fold_id}")
+    print(f"  prob GT=0 samples: {[f'{p:.3f}' for p,g in zip(test_probs, test_gts) if g==0]}")
+    print(f"  prob GT=1 samples: {[f'{p:.3f}' for p,g in zip(test_probs, test_gts) if g==1]}")
+    print(f"  mean(GT=0)={np.mean([p for p,g in zip(test_probs,test_gts) if g==0] or [0]):.3f}")
+    print(f"  mean(GT=1)={np.mean([p for p,g in zip(test_probs,test_gts) if g==1] or [0]):.3f}")
             
     wandb.finish()
     return video_keys[0], test_gts[0], test_probs[0]
