@@ -4,3 +4,6 @@
 [submodule "multi_step_localization"]
 	path = multi_step_localization
 	url = https://github.com/LorenzoDeMarco/multi_step_localization.git
+[submodule "EgoVLP"]
+	path = EgoVLP
+	url = https://github.com/LorenzoDeMarco/EgoVLP.git
