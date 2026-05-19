@@ -65,5 +65,5 @@ if __name__ == "__main__":
             match_matrix = np.stack([v_idx, t_idx], axis=0)
             precomputed_matches[clean_k] = match_matrix
             
-    np.savenz('hungarian_matches.npz', **precomputed_matches)
+    np.savez('hungarian_matches.npz', **precomputed_matches)
     print("Hungarian matching dictionary pre-computed and stored in hungarian_matches.npz ")
