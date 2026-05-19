@@ -42,12 +42,12 @@ class TaskVerificationGraphDataset(Dataset):
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     data = json.load(f)
-        steps = data.get('steps', {})
-        # same logic as generate_text_features.py: order by node_id, filter START/END
-        node_ids_sorted = sorted(steps.keys(), key=lambda x: int(x))
-        valid_ids = [int(nid) for nid in node_ids_sorted if steps[nid] not in SKIP_TOKENS]
-        self.recipe_valid_node_ids[prefix] = valid_ids
-        self.recipe_edges[prefix] = data.get('edges', [])
+                steps = data.get('steps', {})
+                # same logic as generate_text_features.py: order by node_id, filter START/END
+                node_ids_sorted = sorted(steps.keys(), key=lambda x: int(x))
+                valid_ids = [int(nid) for nid in node_ids_sorted if steps[nid] not in SKIP_TOKENS]
+                self.recipe_valid_node_ids[prefix] = valid_ids
+                self.recipe_edges[prefix] = data.get('edges', [])
 
     def __len__(self):
         return len(self.video_list)
