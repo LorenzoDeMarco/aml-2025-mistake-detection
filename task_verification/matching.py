@@ -65,7 +65,7 @@ class GraphNodeRealizer(nn.Module):
         
         for b in range(batch_size):
 
-            match_indices = precomputed_matches[b]
+            match_indices = precomputed_matches[b].to(device)
             v_idx = match_indices[0]
             t_idx = match_indices[1]
             
