@@ -34,44 +34,71 @@ class TaskVerificationGraphDataset(Dataset):
         self.recipe_edges = {}
         base_graph_dir = graph_zip_path if os.path.isdir(graph_zip_path) else 'task_graphs'
         
+        self.recipe_valid_node_ids = {}
+        SKIP_TOKENS = {'START', 'END'}
+
         for prefix, filename in RECIPE_MAPPING.items():
             file_path = os.path.join(base_graph_dir, filename)
             if os.path.exists(file_path):
                 with open(file_path, 'r') as f:
                     data = json.load(f)
-                    self.recipe_edges[prefix] = data.get('edges', [])
+        steps = data.get('steps', {})
+        # same logic as generate_text_features.py: order by node_id, filter START/END
+        node_ids_sorted = sorted(steps.keys(), key=lambda x: int(x))
+        valid_ids = [int(nid) for nid in node_ids_sorted if steps[nid] not in SKIP_TOKENS]
+        self.recipe_valid_node_ids[prefix] = valid_ids
+        self.recipe_edges[prefix] = data.get('edges', [])
 
     def __len__(self):
         return len(self.video_list)
 
     def __getitem__(self, idx):
         video_id = self.video_list[idx]
-        recipe_prefix = video_id.split('_')[0]
-        
-        vis_feat = self.visual_features[video_id]
-        text_feat = self.text_features[video_id]
-        video_steps = self.annotations[video_id]['steps']
-        
-        step_id_to_local_idx = {int(s['step_id']): i for i, s in enumerate(video_steps)}
-        
+        recipe_prefix = video_id.split("_")[0]
+
+        vis_feat = self.visual_features[video_id]  # [K, 768]
+        text_feat = self.text_features[video_id]   # [N, 256]
+        N = text_feat.shape[0]
+
+        # Map original node_id -> local index 0..N-1 in the task graph
+        # Valid nodes are those excluding START and END, ordered numerically
+        # Same logic used in generate_text_features.py
         raw_edges = self.recipe_edges.get(recipe_prefix, [])
+
+        # Build the mapping: original node_id -> local index
+        # We need to know which node_ids are valid (excluding START/END)
+        # Use recipe_valid_node_ids loaded in __init__
+        valid_ids = self.recipe_valid_node_ids.get(recipe_prefix, [])
+
+        # valid_ids is an ordered list of original node_ids
+        # Example: [1, 2, 3, ..., N]
+        node_id_to_local = {nid: i for i, nid in enumerate(valid_ids)}
+
         remapped_edges = []
-        
+
         for src, dst in raw_edges:
-            if src in step_id_to_local_idx and dst in step_id_to_local_idx:
+            if src in node_id_to_local and dst in node_id_to_local:
                 remapped_edges.append([
-                    step_id_to_local_idx[src], 
-                    step_id_to_local_idx[dst]
+                    node_id_to_local[src],
+                    node_id_to_local[dst]
                 ])
-                
+
         if remapped_edges:
-            edge_index = torch.tensor(remapped_edges, dtype=torch.long).t()
+            edge_index = torch.tensor(
+                remapped_edges,
+                dtype=torch.long
+            ).t().contiguous()
         else:
             edge_index = torch.empty((2, 0), dtype=torch.long)
-            
-        has_error = any(step.get('has_errors', False) for step in video_steps)
+
+        # Label remains unchanged
+        has_error = any(
+            step.get("has_errors", False)
+            for step in self.annotations[video_id]["steps"]
+        )
+
         label = 1.0 if has_error else 0.0
-        
+
         return {
             "video_id": video_id,
             "visual_features": torch.tensor(vis_feat),
