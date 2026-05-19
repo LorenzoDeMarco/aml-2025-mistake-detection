@@ -8,9 +8,13 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import numpy as np
 import wandb
 import pandas as pd
-from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
-from task_verification.GNN import TaskVerificationGNN
 
+try:
+    from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
+    from task_verification.GNN import TaskVerificationGNN
+except ModuleNotFoundError:
+    from dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
+    from GNN import TaskVerificationGNN
 
 def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
     wandb.init(
@@ -69,16 +73,17 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
             edge_idx_list = batch["edge_indices"] 
             labels = batch["labels"].to(device)
             
-            # → label=0: 0.1, label=1: 0.9
-            smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
+            smoothed_labels = labels * (1.0 - label_smoothing) + label_smoothing / 2.0
             
             optimizer.zero_grad()
             logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
             
             classification_loss = criterion(logits, smoothed_labels)
-            total_loss = classification_loss + 0.01 * align_loss
+            # Composite objective function: classification task balanced with alignment matrix anchor
+            total_loss = classification_loss + 0.1 * align_loss
             
             total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             train_loss += classification_loss.item() * vis_feat.size(0)
             
@@ -121,14 +126,14 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
 if __name__ == "__main__":
     hyperparameters = {
         'visual_npz': 'step_embeddings_dataset.npz',
-        'text_npz': 'text_task_graphs_v2.npz',
-        'graph_zip': 'annotations/task_graphs',
-        'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
-        'batch_size': 8, 
-        'epochs': 10,
-        'lr': 1e-4,
+        'text_npz': 'text_task_graphs.npz',
+        'graph_zip': 'task_graphs',
+        'annotations_json': 'complete_step_annotations.json',
+        'batch_size': 16, # Mitigates Scipy step-by-step CPU overhead efficiently
+        'epochs': 20,
+        'lr': 2e-4,
         'weight_decay': 1e-2,
-        'dropout': 0.5
+        'dropout': 0.4
     }
     
     print("Executing RAM caching strategy...")
@@ -145,7 +150,7 @@ if __name__ == "__main__":
     all_video_ids = sorted(list(global_visual.keys()))
     
     progress_records = []
-    print(f"Starting Leave-One-Out Validation across {len(all_video_ids)} videos.")
+    print(f"Starting Leave-One-Out Validation across {len(all_video_ids)} folds on A100 node.")
     
     for fold, test_id in enumerate(all_video_ids):
         train_ids = [vid for vid in all_video_ids if vid != test_id]
