@@ -129,7 +129,7 @@ if __name__ == "__main__":
     hyperparameters = {
         'visual_npz': 'step_embeddings_dataset.npz',
         'text_npz': 'text_task_graphs_v2.npz',
-        'graph_zip': 'task_graphs',
+        'graph_zip': 'annotations/task_graphs',
         'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
         'batch_size': 8, 
         'epochs': 20,
