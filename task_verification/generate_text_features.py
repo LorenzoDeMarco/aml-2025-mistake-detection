@@ -64,7 +64,7 @@ def load_egovlp_text_encoder(checkpoint_path, device):
     model = FrozenInTime(**model_config)
 
     # egovlp.pth stores the full training state — extract only model weights
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     if "state_dict" in checkpoint:
         state_dict = checkpoint["state_dict"]
     else:
