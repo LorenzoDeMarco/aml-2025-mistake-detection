@@ -128,7 +128,7 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
 if __name__ == "__main__":
     hyperparameters = {
         'visual_npz': 'step_embeddings_dataset.npz',
-        'text_npz': 'text_task_graphs.npz',
+        'text_npz': 'text_task_graphs_v2.npz',
         'graph_zip': 'task_graphs',
         'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
         'batch_size': 8, 
