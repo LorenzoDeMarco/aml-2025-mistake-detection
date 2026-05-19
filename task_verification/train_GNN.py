@@ -69,13 +69,14 @@ def train_loo(fold_id, train_ids, test_ids, global_visual, global_text, args):
             edge_idx_list = batch["edge_indices"] 
             labels = batch["labels"].to(device)
             
-            smoothed_labels = labels * (1.0 - label_smoothing) + label_smoothing / 2.0
+            # → label=0: 0.1, label=1: 0.9
+            smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
             
             optimizer.zero_grad()
             logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
             
             classification_loss = criterion(logits, smoothed_labels)
-            total_loss = classification_loss + 0.1 * align_loss
+            total_loss = classification_loss + 0.01 * align_loss
             
             total_loss.backward()
             optimizer.step()
@@ -123,7 +124,7 @@ if __name__ == "__main__":
         'text_npz': 'text_task_graphs.npz',
         'graph_zip': 'task_graphs',
         'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
-        'batch_size': 16, 
+        'batch_size': 8, 
         'epochs': 20,
         'lr': 2e-4,
         'weight_decay': 1e-2,

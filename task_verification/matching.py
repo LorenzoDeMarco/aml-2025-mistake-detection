@@ -12,7 +12,7 @@ class GraphNodeRealizer(nn.Module):
             out_channels=visual_dim,
             kernel_size=4,
             stride=4,
-            padding=1
+            padding=0
         )
         
         self.sim_visual_proj = nn.Linear(visual_dim, joint_dim)
