@@ -135,7 +135,7 @@ if __name__ == "__main__":
         'text_npz': 'text_task_graphs.npz',
         'matches_npz': 'hungarian_matches.npz',
         'graph_zip': 'task_graphs',
-        'annotations_json': 'complete_step_annotations.json',
+        'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
         'batch_size': 64,
         'epochs': 20,
         'lr': 2e-4,
