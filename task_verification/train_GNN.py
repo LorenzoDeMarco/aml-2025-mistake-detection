@@ -125,10 +125,10 @@ if __name__ == "__main__":
         'graph_zip': 'annotations/task_graphs',
         'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
         'batch_size': 8, 
-        'epochs': 20,
-        'lr': 2e-4,
+        'epochs': 10,
+        'lr': 1e-4,
         'weight_decay': 1e-2,
-        'dropout': 0.4
+        'dropout': 0.5
     }
     
     print("Executing RAM caching strategy...")
