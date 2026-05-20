@@ -8,9 +8,10 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 import numpy as np
 import wandb
 import pandas as pd
+import time 
+
 from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
 from task_verification.GNN import TaskVerificationGNN
-
 
 def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, global_text, args):
     wandb.init(
@@ -45,7 +46,6 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = TaskVerificationGNN(dropout=args['dropout']).to(device)
     
-    # --- Differential Learning Rate ---
     projector_params, base_params = [], []
     for name, param in model.named_parameters():
         if 'sim_visual_proj' in name or 'sim_text_proj' in name or 'logit_scale' in name:
@@ -61,8 +61,11 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
     criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
 
+    print(f"    [Setup] Train : {len(train_ids)} video | Test : {len(test_ids)} video")
+    
     for epoch in range(1, args['epochs'] + 1):
-        # --- Annealing of Alignment Weight ---
+        epoch_start_time = time.time() 
+        
         current_align_weight = max(0.1, 1.0 * (0.8 ** (epoch - 1)))
         
         model.train()
@@ -92,6 +95,12 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
         scheduler_lr = optimizer.param_groups[0]['lr']
         epoch_loss = train_loss / len(train_dataset)
         wandb.log({"train/loss": epoch_loss, "train/lr": scheduler_lr, "epoch": epoch, "align_weight": current_align_weight})
+        
+        epoch_duration = time.time() - epoch_start_time 
+        
+        
+        if epoch == 1 or epoch == args['epochs'] or epoch % 5 == 0:
+            print(f"    -> Epoch {epoch:02d}/{args['epochs']} | Loss: {epoch_loss:.4f} | AlignWt: {current_align_weight:.3f} | Time: {epoch_duration:.2f}s")
         
     model.eval()
     fold_results = []
@@ -135,13 +144,14 @@ if __name__ == "__main__":
         'dropout': 0.4
     }
     
-    print("Executing RAM caching ...")
+    global_start_time = time.time() 
+    
+    print("Executing RAM caching strategy...")
     global_visual = {k.replace('.npy', ''): v.astype(np.float32) for k, v in np.load(hyperparameters['visual_npz']).items()}
     global_text = {k.replace('.npy', ''): v.astype(np.float32) for k, v in np.load(hyperparameters['text_npz']).items()}
             
     all_video_ids = sorted(list(global_visual.keys()))
     
-    # --- Leave-One-Group-Out (LOGO) ---
     recipe_groups = {}
     for vid in all_video_ids:
         recipe_id = vid.split('_')[0]
@@ -150,24 +160,31 @@ if __name__ == "__main__":
         recipe_groups[recipe_id].append(vid)
         
     progress_records = []
-    print(f"Starting Leave-One-Recipe-Out (LOGO) across {len(recipe_groups)} recipes.")
+    print(f"\n=======================================================================")
+    print(f" Starting Leave-One-Recipe-Out (LOGO) across {len(recipe_groups)} recipes.")
+    print(f"=======================================================================\n")
     
     for fold, (recipe_id, test_ids) in enumerate(recipe_groups.items()):
+        fold_start_time = time.time() 
+        
         train_ids = [vid for vid in all_video_ids if vid not in test_ids]
         
-        print(f"\n--- Fold {fold+1}/{len(recipe_groups)} | Testing unseen recipe: {recipe_id} ({len(test_ids)} videos) ---")
+        print(f"\n[{fold+1}/{len(recipe_groups)}] Start Fold | Testing unseen recipe: '{recipe_id}' ({len(test_ids)} videos) ")
         
         results = train_logo_fold(fold, recipe_id, train_ids, test_ids, global_visual, global_text, hyperparameters)
         
+        print(f"    [Valutazione FOLD completata - Risultati sui {len(test_ids)} video unseen]:")
         for res in results:
             progress_records.append(res)
-            print(f"  Video: {res['video_id']} | GT: {res['ground_truth']} | Prob: {res['probability']:.4f}")
+            print(f"      Video: {res['video_id']:<10} | GT: {res['ground_truth']} | Prob: {res['probability']:.4f}")
             
-        #incremental saving 
         df_progress = pd.DataFrame(progress_records)
         df_progress.to_csv("logo_gnn_error_analysis.csv", index=False)
+        
+        fold_duration = time.time() - fold_start_time
+        print(f" Fold {fold+1} completed in {fold_duration:.2f} seconds ({fold_duration/60:.2f} minutes).")
             
-    # Global metrics
+    #global metrics
     df_progress = pd.DataFrame(progress_records)
     y_true = df_progress['ground_truth'].values
     y_pred = df_progress['prediction'].values
@@ -179,10 +196,13 @@ if __name__ == "__main__":
     final_f1 = f1_score(y_true, y_pred, zero_division=0)
     final_auroc = roc_auc_score(y_true, y_prob)
     
+    global_duration = time.time() - global_start_time
+    
     print("\n================ FINAL GLOBAL GNN PERFORMANCE EVALUATION (LOGO) ================")
     print(f"wandb: Final_AUROC {final_auroc:.5f}")
     print(f"wandb:   Final_Acc {final_acc:.5f}")
     print(f"wandb:    Final_F1 {final_f1:.5f}")
     print(f"wandb:  Final_Prec {final_prec:.5f}")
     print(f"wandb:   Final_Rec {final_rec:.5f}")
-    print("===============================================================================\n")
+    print("===============================================================================")
+    print(f"Execution total completed in {global_duration/60:.2f} minutes ({(global_duration/3600):.2f} hours).\n")
