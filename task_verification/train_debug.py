@@ -12,11 +12,11 @@ from task_verification.GNN import TaskVerificationGNN
 def run_debug():
     args = {
         'visual_npz':      'step_embeddings_dataset.npz',
-        'text_npz':        'text_task_graphs.npz',  # Assicurati che sia quello corretto
-        'graph_zip':       'task_graphs',
-        'annotations_json':'complete_step_annotations.json',
-        'batch_size':      16, # Impostato a 16 per bilanciare l'Ungherese su CPU
-        'epochs':          25, # Qualche epoca in più per vedere bene la divergenza
+        'text_npz':        'text_task_graphs_v2.npz',  
+        'graph_zip':       'annotations/graphs',
+        'annotations_json':'annotations/annotation_json/complete_step_annotations.json',
+        'batch_size':      16, 
+        'epochs':          25, 
         'lr':              2e-4,
         'weight_decay':    1e-2,
         'dropout':         0.4,
