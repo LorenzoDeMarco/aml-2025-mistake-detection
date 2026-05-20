@@ -13,11 +13,8 @@ class GraphNodeRealizer(nn.Module):
         """
         super(GraphNodeRealizer, self).__init__()
         
-        # --- Positional Encoding ---
-        self.step_positional_encoding = nn.Embedding(max_recipe_steps, text_dim)
-        
         self.temporal_conv = nn.Conv1d(
-            in_channels=visual_dim, out_channels=visual_dim, kernel_size=4, stride=4, padding=1
+            in_channels=visual_dim, out_channels=visual_dim, kernel_size=4, stride=4, padding=0
         )
         
         # --- Non-Linear MLP Projectors for Domain Adaptation ---
@@ -35,6 +32,10 @@ class GraphNodeRealizer(nn.Module):
             nn.LayerNorm(joint_dim),
             nn.Linear(joint_dim, joint_dim)
         )
+
+        # --- Sequential Positional Encoding 1D for Hungarian ---
+        #joint_dim because it's summed after MLP projection
+        self.step_positional_encoding = nn.Embedding(max_recipe_steps, joint_dim)
         
         self.unified_fusion = nn.Sequential(
             nn.Linear(visual_dim + text_dim, joint_dim * 2),
@@ -58,16 +59,11 @@ class GraphNodeRealizer(nn.Module):
             padding_idx=0
         )
         # small init for depth embedding to avoid large initial values that could destabilize training
-        nn.init.normal_(self.depth_embedding.weight, std=0.01)
+        nn.init.normal_(self.depth_embedding.weight, std=0.02)
 
     def forward(self, visual_features, text_features, visual_mask, text_mask, node_depths):
         batch_size, max_m, text_dim = text_features.shape
         device = visual_features.device
-        
-        # Structural PE: add depth signal to text features
-        # Scale small (0.1) to not overpower EgoVLP embeddings
-        depth_pe = self.depth_embedding(node_depths)          # [B, max_m, text_dim]
-        text_features = text_features + 0.1 * depth_pe        # [B, max_m, text_dim]
         
         vis_transposed = visual_features.transpose(1, 2)
         compressed_vis = self.temporal_conv(vis_transposed).transpose(1, 2)
@@ -76,6 +72,11 @@ class GraphNodeRealizer(nn.Module):
         
         proj_v = self.sim_visual_proj(compressed_vis)
         proj_t = self.sim_text_proj(text_features)
+
+        #injection of step positional encoding into text features before matching
+        positions = torch.arange(max_m, device=device).unsqueeze(0).expand(batch_size, max_m)
+        text_pe = self.step_positional_encoding(positions)
+        proj_t = proj_t + text_pe
         
         realized_nodes = torch.zeros(batch_size, max_m, self.sim_text_proj[-1].out_features, device=device)
         extended_visual = torch.cat([compressed_vis, self.missing_visual_embedding.expand(batch_size, 1, -1)], dim=1)
@@ -135,9 +136,9 @@ class GraphNodeRealizer(nn.Module):
                     for i in range(len(v_idx)):
                         if matched_sims[i] >= 0.20:
                             node_mapping[t_idx[i]] = v_idx[i]
-                            is_matched_node[t_idx[i]] = True
                             
             gathered_vis = extended_visual[b, node_mapping]
+            #we use raw text features for fusion to send to GNN without positional encoding
             fused_inputs = torch.cat([gathered_vis, text_features[b]], dim=-1)
             sample_realized = self.unified_fusion(fused_inputs)
             

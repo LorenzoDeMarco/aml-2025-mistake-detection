@@ -15,6 +15,10 @@ class TaskVerificationGNN(nn.Module):
         self.node_realizer = GraphNodeRealizer(
             visual_dim=visual_dim, text_dim=text_dim, joint_dim=hidden_dim, dropout=dropout
         )
+
+        # Structural depth embedding for GNN message passing
+        self.depth_embedding = nn.Embedding(50, hidden_dim, padding_idx=0)
+        nn.init.normal_(self.depth_embedding.weight, std=0.01)
         
         # graph message passing layers
         self.gnn1 = GraphConv(hidden_dim, hidden_dim)
@@ -46,7 +50,7 @@ class TaskVerificationGNN(nn.Module):
         batch_size = visual_features.size(0)
         device = visual_features.device
         
-        # node feature realization -> [B, Max_M, 256]
+        # node feature realization -> [B, Max_M, 256] 
         realized_nodes, align_loss = self.node_realizer(visual_features, text_features, visual_mask, text_mask, node_depths)
         
         # graph batching (unrolling dense representations into flat tensors)
@@ -60,14 +64,19 @@ class TaskVerificationGNN(nn.Module):
             
             # slice only valid, non-padded node states
             x_b = realized_nodes[b, :num_real_nodes]
+
+            # injection of depth embedding for GNN message passing (structural PE)
+            d_b = node_depths[b, :num_real_nodes].to(device)
+            d_emb = self.depth_embedding(torch.clamp(d_b, max=49))
+            x_b = x_b + d_emb 
+            
             x_list.append(x_b)
             
-            # offset tracking indices for the current graph adjacency matrix
-            edges_b = edge_indices[b].to(device)
-            if edges_b.numel() > 0:
-                edge_list.append(edges_b + node_offset)
-                
-            # define pooling assignment tracker
+            edge_idx = edge_indices[b].clone().to(device)
+            if edge_idx.numel() > 0:
+                edge_idx += node_offset
+            edge_list.append(edge_idx)
+            
             batch_b = torch.full((num_real_nodes,), fill_value=b, dtype=torch.long, device=device)
             batch_assignment_list.append(batch_b)
             
