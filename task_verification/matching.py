@@ -9,6 +9,7 @@ class GraphNodeRealizer(nn.Module):
         """
         Graph Node Realizer with Hungarian InfoNCE, Differential LR support,
         Text Positional Encoding, Hard Negative Mining, and MLP Domain Adaptation.
+        Structural depth computation is integrated for potential use in GNN message passing.
         """
         super(GraphNodeRealizer, self).__init__()
         
@@ -51,12 +52,22 @@ class GraphNodeRealizer(nn.Module):
         # learnable temperature (style CLIP) to stabilize InfoNCE training 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
-    def forward(self, visual_features, text_features, visual_mask, text_mask):
+        self.depth_embedding = nn.Embedding(
+            num_embeddings=50,  # max depths
+            embedding_dim=text_dim,
+            padding_idx=0
+        )
+        # small init for depth embedding to avoid large initial values that could destabilize training
+        nn.init.normal_(self.depth_embedding.weight, std=0.01)
+
+    def forward(self, visual_features, text_features, visual_mask, text_mask, node_depths):
         batch_size, max_m, text_dim = text_features.shape
         device = visual_features.device
-        positions = torch.arange(max_m, device=device).unsqueeze(0).expand(batch_size, max_m)
-        text_pe = self.step_positional_encoding(positions)
-        text_features = text_features + text_pe
+        
+        # Structural PE: add depth signal to text features
+        # Scale small (0.1) to not overpower EgoVLP embeddings
+        depth_pe = self.depth_embedding(node_depths)          # [B, max_m, text_dim]
+        text_features = text_features + 0.1 * depth_pe        # [B, max_m, text_dim]
         
         vis_transposed = visual_features.transpose(1, 2)
         compressed_vis = self.temporal_conv(vis_transposed).transpose(1, 2)
@@ -124,6 +135,7 @@ class GraphNodeRealizer(nn.Module):
                     for i in range(len(v_idx)):
                         if matched_sims[i] >= 0.20:
                             node_mapping[t_idx[i]] = v_idx[i]
+                            is_matched_node[t_idx[i]] = True
                             
             gathered_vis = extended_visual[b, node_mapping]
             fused_inputs = torch.cat([gathered_vis, text_features[b]], dim=-1)

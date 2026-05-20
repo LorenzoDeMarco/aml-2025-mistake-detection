@@ -1,5 +1,7 @@
 import os
 import json
+
+import numpy as np
 import torch
 from torch.utils.data import Dataset
 
@@ -99,12 +101,24 @@ class TaskVerificationGraphDataset(Dataset):
 
         label = 1.0 if has_error else 0.0
 
+        # Compute structural depth for each task graph node
+        remapped_edges_for_depth = [
+            (node_id_to_local[s], node_id_to_local[d])
+            for s, d in raw_edges
+            if s in node_id_to_local and d in node_id_to_local
+        ]
+
+        # Calculate depth of DAG
+        node_depths = compute_dag_depth(remapped_edges_for_depth, N)
+
+
         return {
             "video_id": video_id,
             "visual_features": torch.tensor(vis_feat),
             "text_features": torch.tensor(text_feat),
             "edge_index": edge_index,
-            "label": torch.tensor(label, dtype=torch.float32)
+            "label": torch.tensor(label, dtype=torch.float32),
+            "node_depths": torch.tensor(node_depths, dtype=torch.long)
         }
 
 def graph_collate_fn(batch):
@@ -131,6 +145,11 @@ def graph_collate_fn(batch):
     for i, t in enumerate(text_tensors):
         batched_text[i, :t.size(0), :] = t
         text_mask[i, :t.size(0)] = 1.0
+    
+    depth_tensors = [item["node_depths"] for item in batch]
+    batched_depths = torch.zeros(len(batch), max_text_len, dtype=torch.long)
+    for i, d in enumerate(depth_tensors):
+        batched_depths[i, :d.size(0)] = d
         
     return {
         "video_ids": video_ids,
@@ -139,5 +158,36 @@ def graph_collate_fn(batch):
         "visual_mask": visual_mask,
         "text_mask": text_mask,
         "edge_indices": edge_indices,
-        "labels": labels
+        "labels": labels,
+        "node_depths": batched_depths  # [B, max_N]
     }
+
+def compute_dag_depth(edge_list, N):
+    """
+    Computes the topological depth of each node in the DAG.
+    Depth = length of the longest path from any source node (in-degree=0).
+    Returns: np.array [N] of int depths, 0-indexed.
+    """
+    from collections import deque
+    
+    in_degree = [0] * N
+    children  = [[] for _ in range(N)]
+    
+    for src, dst in edge_list:
+        if 0 <= src < N and 0 <= dst < N:
+            children[src].append(dst)
+            in_degree[dst] += 1
+    
+    # BFS from all source nodes (in-degree = 0)
+    depth = [0] * N
+    queue = deque([i for i in range(N) if in_degree[i] == 0])
+    
+    while queue:
+        node = queue.popleft()
+        for child in children[node]:
+            depth[child] = max(depth[child], depth[node] + 1)
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                queue.append(child)
+    
+    return np.array(depth, dtype=np.int64)

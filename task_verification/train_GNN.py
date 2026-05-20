@@ -76,13 +76,14 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
             text_feat = batch["text_features"].to(device)
             vis_mask = batch["visual_mask"].to(device)
             text_mask = batch["text_mask"].to(device)
-            edge_idx_list = batch["edge_indices"] 
+            edge_idx_list = batch["edge_indices"]
+            node_depths = batch["node_depths"].to(device) 
             labels = batch["labels"].to(device)
             
-            smoothed_labels = labels * (1.0 - label_smoothing) + label_smoothing / 2.0
+            smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
             
             optimizer.zero_grad()
-            logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
+            logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list, node_depths)
             
             classification_loss = criterion(logits, smoothed_labels)
             total_loss = classification_loss + current_align_weight * align_loss
@@ -112,10 +113,11 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
             vis_mask = batch["visual_mask"].to(device)
             text_mask = batch["text_mask"].to(device)
             edge_idx_list = batch["edge_indices"]
+            node_depths = batch["node_depths"].to(device)
             labels = batch["labels"]
             video_ids = batch["video_ids"]
             
-            logits, _ = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list)
+            logits, _ = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list, node_depths)
             probs = torch.sigmoid(logits).cpu().numpy()
             gts = labels.numpy()
             

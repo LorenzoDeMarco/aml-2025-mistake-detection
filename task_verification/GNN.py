@@ -33,7 +33,7 @@ class TaskVerificationGNN(nn.Module):
             nn.Linear(hidden_dim // 2, 1)
         )
 
-    def forward(self, visual_features, text_features, visual_mask, text_mask, edge_indices):
+    def forward(self, visual_features, text_features, visual_mask, text_mask, edge_indices, node_depths):
         """
         Args:
             visual_features: [B, Max_N, 768]
@@ -41,12 +41,13 @@ class TaskVerificationGNN(nn.Module):
             visual_mask: [B, Max_N]
             text_mask: [B, Max_M]
             edge_indices: List of length B containing [2, E_i] tensors
+            node_depths: [B, Max_M] - structural depth of each node for positional encoding
         """
         batch_size = visual_features.size(0)
         device = visual_features.device
         
         # node feature realization -> [B, Max_M, 256]
-        realized_nodes, align_loss = self.node_realizer(visual_features, text_features, visual_mask, text_mask)
+        realized_nodes, align_loss = self.node_realizer(visual_features, text_features, visual_mask, text_mask, node_depths)
         
         # graph batching (unrolling dense representations into flat tensors)
         x_list = []
