@@ -1,6 +1,7 @@
 # debug_gnn.py
 import torch
 import torch.nn as nn
+import torch.optim as optim
 import numpy as np
 from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score
@@ -11,19 +12,19 @@ from task_verification.GNN import TaskVerificationGNN
 def run_debug():
     args = {
         'visual_npz':      'step_embeddings_dataset.npz',
-        'text_npz':        'text_task_graphs_v2.npz',
-        'graph_zip':       'annotations/task_graphs',
-        'annotations_json':'annotations/annotation_json/complete_step_annotations.json',
-        'batch_size':      8,
-        'epochs':          20,
-        'lr':              1e-4,
+        'text_npz':        'text_task_graphs.npz',  # Assicurati che sia quello corretto
+        'graph_zip':       'task_graphs',
+        'annotations_json':'complete_step_annotations.json',
+        'batch_size':      16, # Impostato a 16 per bilanciare l'Ungherese su CPU
+        'epochs':          25, # Qualche epoca in più per vedere bene la divergenza
+        'lr':              2e-4,
         'weight_decay':    1e-2,
-        'dropout':         0.5,
+        'dropout':         0.4,
     }
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
 
-    print("\nLoading NPZ files...")
+    print("\nLoading NPZ files into RAM...")
     global_visual = {k.replace('.npy',''): v.astype(np.float32)
                      for k, v in np.load(args['visual_npz']).items()}
     global_text   = {k.replace('.npy',''): v.astype(np.float32)
@@ -31,84 +32,114 @@ def run_debug():
 
     all_ids   = sorted(global_visual.keys())
     test_id   = all_ids[0]
-    train_ids = [v for v in all_ids if v != test_id]
+    
+    # Nel debug script, overfittiamo volutamente sul training set
+    # per verificare che l'architettura sia in grado di imparare (capacità rappresentativa)
+    train_ids = [vid for vid in all_ids if vid != test_id]
 
-    print(f"Test video: {test_id}")
-
-    train_ds = TaskVerificationGraphDataset(
-        global_visual, global_text,
-        args['graph_zip'], args['annotations_json'], train_ids, split='train'
+    # Prendi un sottoinsieme per fare debugging veloce (es. 64 video)
+    # Rimuovi lo slicing [:64] se vuoi fare il debug su tutto il dataset
+    debug_train_ids = train_ids[:64]
+    
+    print(f"Creating Dataset with {len(debug_train_ids)} videos...")
+    train_dataset = TaskVerificationGraphDataset(
+        preloaded_visual=global_visual,
+        preloaded_text=global_text,
+        graph_zip_path=args['graph_zip'],
+        annotations_path=args['annotations_json'],
+        video_ids=debug_train_ids,
+        split='train'
     )
-    train_loader = DataLoader(train_ds, batch_size=args['batch_size'], shuffle=True,
-                              collate_fn=graph_collate_fn, num_workers=0)
-
-    n_pos = sum(1 for i in range(len(train_ds)) if train_ds[i]['label'].item() == 1)
-    n_neg = len(train_ds) - n_pos
-    print(f"Train: {len(train_ds)} samples — {n_pos} pos, {n_neg} neg")
+    
+    train_loader = DataLoader(
+        train_dataset, batch_size=args['batch_size'], shuffle=True,
+        num_workers=2, collate_fn=graph_collate_fn, pin_memory=True
+    )
 
     model = TaskVerificationGNN(dropout=args['dropout']).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args['lr'], weight_decay=args['weight_decay'])
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
-    criterion = nn.BCEWithLogitsLoss()
-    ls = 0.1
+    optimizer = optim.AdamW(model.parameters(), lr=args['lr'], weight_decay=args['weight_decay'])
+    criterion = nn.BCEWithLogitsLoss(reduction='mean')
+    label_smoothing = 0.1
 
-    print("\n=== TRAINING ===")
+    print("\nStarting Debug Training Loop (Overfitting Test)...")
+    print("-" * 75)
+    print(f"{'Epoch':<6} | {'Tot Loss':<10} | {'Cls Loss':<10} | {'InfoNCE':<10} | {'Separation (GT1 - GT0)'}")
+    print("-" * 75)
+
     for epoch in range(1, args['epochs'] + 1):
         model.train()
-        total_loss = 0.0
+        train_loss = 0.0
+        total_cls_loss = 0.0
+        total_align_loss = 0.0
+        
+        # Variabili per tracciare la separazione delle probabilità live
+        epoch_probs = []
+        epoch_gts = []
 
         for batch in train_loader:
-            vis   = batch["visual_features"].to(device)
-            txt   = batch["text_features"].to(device)
-            vm    = batch["visual_mask"].to(device)
-            tm    = batch["text_mask"].to(device)
-            ei    = batch["edge_indices"]
-            lbl   = batch["labels"].to(device)
+            vis = batch["visual_features"].to(device)
+            txt = batch["text_features"].to(device)
+            vm  = batch["visual_mask"].to(device)
+            tm  = batch["text_mask"].to(device)
+            ei  = batch["edge_indices"]
+            lbl = batch["labels"].to(device)
 
-            smoothed = lbl * (1 - ls) + (1 - lbl) * ls
+            # Correzione matematica del Label Smoothing: target -> [0.1, 0.9]
+            smoothed_labels = lbl * (1.0 - label_smoothing) + label_smoothing / 2.0
+
             optimizer.zero_grad()
-            logits, al = model(vis, txt, vm, tm, ei)
-            loss = criterion(logits, smoothed) + 0.01 * al
+            
+            # Cattura sia i logit che la Contrastive InfoNCE Loss
+            logits, align_loss = model(vis, txt, vm, tm, ei) 
+            
+            classification_loss = criterion(logits, smoothed_labels)
+            
+            # Loss composita
+            loss = classification_loss + 0.1 * align_loss 
+            
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            
+            # Gradient clipping di sicurezza
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
-            total_loss += loss.item() * vis.size(0)
-
-        scheduler.step()
-        avg_loss = total_loss / len(train_ds)
-
-        # Check sul training set ogni 5 epoche
-        if epoch % 5 == 0 or epoch == 1:
-            model.eval()
-            all_probs, all_gts = [], []
+            
+            # Tracciamento loss
+            bsz = vis.size(0)
+            train_loss += loss.item() * bsz
+            total_cls_loss += classification_loss.item() * bsz
+            total_align_loss += align_loss.item() * bsz
+            
+            # Registriamo le probabilità per l'analisi a fine epoca
             with torch.no_grad():
-                for batch in train_loader:
-                    vis = batch["visual_features"].to(device)
-                    txt = batch["text_features"].to(device)
-                    vm  = batch["visual_mask"].to(device)
-                    tm  = batch["text_mask"].to(device)
-                    ei  = batch["edge_indices"]
-                    lbl = batch["labels"]
+                probs = torch.sigmoid(logits).cpu().numpy()
+                epoch_probs.extend(probs)
+                epoch_gts.extend(lbl.cpu().numpy())
 
-                    logits, _ = model(vis, txt, vm, tm, ei)
-                    probs = torch.sigmoid(logits).cpu().numpy()
-                    all_probs.extend(probs)
-                    all_gts.extend(lbl.numpy())
+        # Calcolo medie dell'epoca
+        avg_loss = train_loss / len(train_dataset)
+        avg_cls = total_cls_loss / len(train_dataset)
+        avg_align = total_align_loss / len(train_dataset)
+        
+        # Calcolo separazione live
+        epoch_probs = np.array(epoch_probs)
+        epoch_gts = np.array(epoch_gts)
+        
+        mean_prob_gt1 = epoch_probs[epoch_gts == 1].mean() if len(epoch_probs[epoch_gts == 1]) > 0 else 0
+        mean_prob_gt0 = epoch_probs[epoch_gts == 0].mean() if len(epoch_probs[epoch_gts == 0]) > 0 else 0
+        live_sep = mean_prob_gt1 - mean_prob_gt0
 
-            all_probs = np.array(all_probs)
-            all_gts   = np.array(all_gts)
-            sep  = all_probs[all_gts==1].mean() - all_probs[all_gts==0].mean()
-            acc  = accuracy_score(all_gts, (all_probs >= 0.5).astype(int))
-            print(f"  Epoch {epoch:>2} | loss={avg_loss:.4f} | "
-                  f"train_acc={acc:.3f} | "
-                  f"mean_GT0={all_probs[all_gts==0].mean():.4f} | "
-                  f"mean_GT1={all_probs[all_gts==1].mean():.4f} | "
-                  f"sep={sep:+.4f}")
-            model.train()
+        # Log avanzato visivo
+        print(f"{epoch:<6} | {avg_loss:<10.4f} | {avg_cls:<10.4f} | {avg_align:<10.4f} | {live_sep:+.4f}")
 
-    print("\n=== FINAL TRAIN SET CHECK ===")
+    # ==========================================
+    # VALUTAZIONE FINALE SUL TRAINING (OVERFIT)
+    # ==========================================
+    print("-" * 75)
     model.eval()
-    all_probs, all_gts = [], []
+    all_probs = []
+    all_gts = []
+
     with torch.no_grad():
         for batch in train_loader:
             vis = batch["visual_features"].to(device)
@@ -117,6 +148,7 @@ def run_debug():
             tm  = batch["text_mask"].to(device)
             ei  = batch["edge_indices"]
             lbl = batch["labels"]
+            
             logits, _ = model(vis, txt, vm, tm, ei)
             probs = torch.sigmoid(logits).cpu().numpy()
             all_probs.extend(probs)
@@ -126,27 +158,19 @@ def run_debug():
     all_gts   = np.array(all_gts)
     sep = all_probs[all_gts==1].mean() - all_probs[all_gts==0].mean()
     acc = accuracy_score(all_gts, (all_probs >= 0.5).astype(int))
-    print(f"  train_acc={acc:.4f}")
-    print(f"  mean prob GT=0: {all_probs[all_gts==0].mean():.4f} ± {all_probs[all_gts==0].std():.4f}")
-    print(f"  mean prob GT=1: {all_probs[all_gts==1].mean():.4f} ± {all_probs[all_gts==1].std():.4f}")
-    print(f"  separazione:    {sep:+.4f}")
+    
+    print("\n🔍 RISULTATI ANALISI OVERFITTING:")
+    print(f"  Training Accuracy: {acc:.4f}")
+    print(f"  Media Probabilità (Video Corretti, GT=0): {all_probs[all_gts==0].mean():.4f} ± {all_probs[all_gts==0].std():.4f}")
+    print(f"  Media Probabilità (Video con Errore, GT=1): {all_probs[all_gts==1].mean():.4f} ± {all_probs[all_gts==1].std():.4f}")
+    print(f"  Distanza di Separazione: {sep:+.4f}")
 
     if sep > 0.05:
-        print("  ✓ Il modello IMPARA sul training set — problema è overfitting/generalizzazione")
+        print("\n  ✅ SUCCESSO: La Contrastive Loss funziona! Il modello sta distanziando le probabilità. L'architettura è salva.")
     elif sep > 0.01:
-        print("  △ Segnale debole — il modello impara pochissimo anche in training")
+        print("\n  ⚠️ ALLERTA: Segnale debole. Il modello impara, ma fatica a polarizzare i logit. Possibile tuning necessario su lr o temperatura.")
     else:
-        print("  ✗ COLLAPSE anche in training — problema architetturale o di loss")
-
-    # Prob distribution
-    print("\n  Prob distribution training set:")
-    bins = [0, 0.3, 0.4, 0.45, 0.5, 0.55, 0.6, 0.7, 1.0]
-    for i in range(len(bins)-1):
-        mask = (all_probs >= bins[i]) & (all_probs < bins[i+1])
-        n = mask.sum()
-        if n > 0:
-            gt1 = all_gts[mask].sum()
-            print(f"    [{bins[i]:.2f},{bins[i+1]:.2f}): {n:3d} samples, GT=1: {gt1:3d} ({gt1/n*100:.0f}%)")
+        print("\n  ❌ FALLIMENTO: COLLASSO DELLE RAPPRESENTAZIONI. Il modello sta ancora predicendo 0.53 per tutti. Bisogna rivedere il layer di fusione.")
 
 if __name__ == '__main__':
     run_debug()
