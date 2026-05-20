@@ -1,30 +1,32 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 from scipy.optimize import linear_sum_assignment
 
 class GraphNodeRealizer(nn.Module):
-    def __init__(self, visual_dim=768, text_dim=256, joint_dim=256, dropout=0.4):
+    def __init__(self, visual_dim=768, text_dim=256, joint_dim=256, dropout=0.4, max_recipe_steps=100):
         """
-        Video context token alignment with Hungarian Graph matching.
-        Unified projection and absolute index mapping implementation.
+        Graph Node Realizer with Hungarian InfoNCE, Differential LR support,
+        Feature Dropout, Text Positional Encoding, and Hard Negative Mining.
         """
         super(GraphNodeRealizer, self).__init__()
         
-        # temporal contractive convolution (Stride 4 with explicit protective padding)
+        # --- Feature Dropout ---
+        #free data augmentation strategy to improve generalization and prevent overfitting on small datasets
+        self.feature_dropout = nn.Dropout(p=0.1)
+        
+        # --- Positional Encoding ---
+        # give the model a sense of step order in the task graph, which is crucial for understanding procedural tasks
+        self.step_positional_encoding = nn.Embedding(max_recipe_steps, text_dim)
+        
         self.temporal_conv = nn.Conv1d(
-            in_channels=visual_dim,
-            out_channels=visual_dim,
-            kernel_size=4,
-            stride=4,
-            padding=1
+            in_channels=visual_dim, out_channels=visual_dim, kernel_size=4, stride=4, padding=1
         )
         
-        # metric space mapping projections
         self.sim_visual_proj = nn.Linear(visual_dim, joint_dim)
         self.sim_text_proj = nn.Linear(text_dim, joint_dim)
         
-        # fusion head 
         self.unified_fusion = nn.Sequential(
             nn.Linear(visual_dim + text_dim, joint_dim * 2),
             nn.ReLU(),
@@ -35,23 +37,27 @@ class GraphNodeRealizer(nn.Module):
             nn.LayerNorm(joint_dim)
         )
         
-        # learnable missing visual Token
         self.missing_visual_embedding = nn.Parameter(torch.zeros(1, visual_dim))
         nn.init.normal_(self.missing_visual_embedding, std=0.02)
         
-        self.temperature = 0.07
+        # clip style learnable temperature parameter for InfoNCE loss, initialized to 1/0.07 as commonly used in contrastive learning
+        self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def forward(self, visual_features, text_features, visual_mask, text_mask):
         batch_size, max_m, text_dim = text_features.shape
         device = visual_features.device
         
-        #dynamic temporal pooling step
+        visual_features = self.feature_dropout(visual_features)
+        
+        positions = torch.arange(max_m, device=device).unsqueeze(0).expand(batch_size, max_m)
+        text_pe = self.step_positional_encoding(positions)
+        text_features = text_features + text_pe
+        
         vis_transposed = visual_features.transpose(1, 2)
         compressed_vis = self.temporal_conv(vis_transposed).transpose(1, 2)
         compressed_mask = visual_mask[:, ::4][:, :compressed_vis.size(1)]
         comp_n = compressed_vis.size(1)
         
-        # project modalities into common metric space
         proj_v = self.sim_visual_proj(compressed_vis)
         proj_t = self.sim_text_proj(text_features)
         
@@ -65,16 +71,14 @@ class GraphNodeRealizer(nn.Module):
             num_vis = int(compressed_mask[b].sum().item())
             num_text = int(text_mask[b].sum().item())
             
-            #default lookup arrays tracking mapping positions 
             node_mapping = torch.full((max_m,), fill_value=comp_n, dtype=torch.long, device=device)
             
             if num_vis > 0 and num_text > 0:
                 v_norm = F.normalize(proj_v[b, :num_vis], p=2, dim=-1)
                 t_norm = F.normalize(proj_t[b, :num_text], p=2, dim=-1)
                 
-                similarity_matrix = torch.mm(v_norm, t_norm.t()) # [num_vis, num_text]
+                similarity_matrix = torch.mm(v_norm, t_norm.t()) 
                 
-                # Hungarian Matching execution
                 cost_matrix = 1.0 - similarity_matrix.detach().cpu().numpy()
                 v_idx, t_idx = linear_sum_assignment(cost_matrix)
                 
@@ -82,24 +86,43 @@ class GraphNodeRealizer(nn.Module):
                     v_idx_t = torch.tensor(v_idx, device=device)
                     t_idx_t = torch.tensor(t_idx, device=device)
                     
-                    # --- INFONCE HUNGARIAN CONTRASTIVE LOSS ---
-                    logits = similarity_matrix / self.temperature
+                    logit_scale = self.logit_scale.exp()
+                    logits = similarity_matrix * logit_scale
                     matched_logits = logits.t()[t_idx_t] # [num_matched, num_vis]
                     
-                    contrastive_loss = F.cross_entropy(matched_logits, v_idx_t)
+                    # --- Hard Negative Mining ---
+                    num_matched = matched_logits.size(0)
+                    
+                    if num_vis > 1:
+
+                        mask = torch.ones_like(matched_logits, dtype=torch.bool)
+                        mask[torch.arange(num_matched), v_idx_t] = False
+                        negative_logits = matched_logits[mask].view(num_matched, num_vis - 1)
+                        
+                        #we pick only the top-k hardest negatives for each positive pair to compute the contrastive loss, which focuses the model on the most informative negative samples and can lead to better convergence and performance, especially in cases where there are many easy negatives that do not contribute much to learning
+                        k = max(1, int(0.15 * num_vis))
+                        k = min(k, negative_logits.size(1)) 
+                        hard_negatives, _ = torch.topk(negative_logits, k, dim=-1)
+                        
+                        positives = matched_logits[torch.arange(num_matched), v_idx_t].unsqueeze(1)
+                        hn_logits = torch.cat([positives, hard_negatives], dim=1)
+                        
+                        hn_targets = torch.zeros(num_matched, dtype=torch.long, device=device)
+                        
+                        contrastive_loss = F.cross_entropy(hn_logits, hn_targets)
+                    else:
+                        contrastive_loss = torch.tensor(0.0, device=device)
+                        
                     aux_alignment_loss += contrastive_loss
                     valid_batch_counts += 1
                     
-                    # Cosine Semantic Thresholding (0.20)
+                    # Cosine Semantic Thresholding
                     matched_sims = similarity_matrix[v_idx_t, t_idx_t]
-                    
                     for i in range(len(v_idx)):
                         if matched_sims[i] >= 0.20:
-                            # Map the local index safely into absolute token coordinate positions
                             node_mapping[t_idx[i]] = v_idx[i]
                             
             gathered_vis = extended_visual[b, node_mapping]
-            
             fused_inputs = torch.cat([gathered_vis, text_features[b]], dim=-1)
             sample_realized = self.unified_fusion(fused_inputs)
             

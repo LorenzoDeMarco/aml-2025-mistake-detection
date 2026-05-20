@@ -3,18 +3,23 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+import pandas as pd
 from torch.utils.data import DataLoader
 from sklearn.metrics import accuracy_score
 
-from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
-from task_verification.GNN import TaskVerificationGNN
+try:
+    from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
+    from task_verification.GNN import TaskVerificationGNN
+except ModuleNotFoundError:
+    from dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
+    from GNN import TaskVerificationGNN
 
 def run_debug():
     args = {
         'visual_npz':      'step_embeddings_dataset.npz',
-        'text_npz':        'text_task_graphs_v2.npz',  
-        'graph_zip':       'annotations/graphs',
-        'annotations_json':'annotations/annotation_json/complete_step_annotations.json',
+        'text_npz':        'text_task_graphs.npz',  
+        'graph_zip':       'task_graphs',
+        'annotations_json':'complete_step_annotations.json',
         'batch_size':      16, 
         'epochs':          25, 
         'lr':              2e-4,
@@ -30,18 +35,12 @@ def run_debug():
     global_text   = {k.replace('.npy',''): v.astype(np.float32)
                      for k, v in np.load(args['text_npz']).items()}
 
-    all_ids   = sorted(global_visual.keys())
-    test_id   = all_ids[0]
+    all_ids = sorted(list(global_visual.keys()))
     
-    # Nel debug script, overfittiamo volutamente sul training set
-    # per verificare che l'architettura sia in grado di imparare (capacità rappresentativa)
-    train_ids = [vid for vid in all_ids if vid != test_id]
-
-    # Prendi un sottoinsieme per fare debugging veloce (es. 64 video)
-    # Rimuovi lo slicing [:64] se vuoi fare il debug su tutto il dataset
-    debug_train_ids = train_ids[:64]
+    # Per il debug veloce, prendiamo solo i primi 64 video
+    debug_train_ids = all_ids[:64] 
     
-    print(f"Creating Dataset with {len(debug_train_ids)} videos...")
+    print(f"Creating Dataset with {len(debug_train_ids)} videos for OVERFITTING TEST...")
     train_dataset = TaskVerificationGraphDataset(
         preloaded_visual=global_visual,
         preloaded_text=global_text,
@@ -57,22 +56,42 @@ def run_debug():
     )
 
     model = TaskVerificationGNN(dropout=args['dropout']).to(device)
-    optimizer = optim.AdamW(model.parameters(), lr=args['lr'], weight_decay=args['weight_decay'])
+    
+    # --- ACCELERATORE: Differential Learning Rate ---
+    # Includiamo TUTTI i nuovi parametri SOTA (Positional Encoding, Logit Scale, Proiezioni)
+    projector_params = []
+    base_params = []
+    fast_learning_keys = ['sim_visual_proj', 'sim_text_proj', 'logit_scale', 'step_positional_encoding']
+    
+    for name, param in model.named_parameters():
+        if any(key in name for key in fast_learning_keys):
+            projector_params.append(param)
+        else:
+            base_params.append(param)
+            
+    optimizer = optim.AdamW([
+        {'params': base_params, 'lr': args['lr']},
+        {'params': projector_params, 'lr': args['lr'] * 5.0} 
+    ], weight_decay=args['weight_decay'])
+    
     criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
 
-    print("\nStarting Debug Training Loop (Overfitting Test)...")
-    print("-" * 75)
-    print(f"{'Epoch':<6} | {'Tot Loss':<10} | {'Cls Loss':<10} | {'InfoNCE':<10} | {'Separation (GT1 - GT0)'}")
-    print("-" * 75)
+    print("\nStarting Debug Training Loop (SOTA Architecture Check)...")
+    print("-" * 85)
+    print(f"{'Epoch':<6} | {'Tot Loss':<10} | {'Cls Loss':<10} | {'InfoNCE':<10} | {'AlgnWt':<6} | {'Separation (GT1 - GT0)'}")
+    print("-" * 85)
 
     for epoch in range(1, args['epochs'] + 1):
+        
+        # --- ACCELERATORE: Annealing del Peso dell'Allineamento ---
+        current_align_weight = max(0.1, 1.0 * (0.8 ** (epoch - 1)))
+        
         model.train()
         train_loss = 0.0
         total_cls_loss = 0.0
         total_align_loss = 0.0
         
-        # Variabili per tracciare la separazione delle probabilità live
         epoch_probs = []
         epoch_gts = []
 
@@ -84,44 +103,33 @@ def run_debug():
             ei  = batch["edge_indices"]
             lbl = batch["labels"].to(device)
 
-            # Correzione matematica del Label Smoothing: target -> [0.1, 0.9]
             smoothed_labels = lbl * (1.0 - label_smoothing) + label_smoothing / 2.0
 
             optimizer.zero_grad()
             
-            # Cattura sia i logit che la Contrastive InfoNCE Loss
             logits, align_loss = model(vis, txt, vm, tm, ei) 
-            
             classification_loss = criterion(logits, smoothed_labels)
             
-            # Loss composita
-            loss = classification_loss + 0.1 * align_loss 
+            loss = classification_loss + current_align_weight * align_loss 
             
             loss.backward()
-            
-            # Gradient clipping di sicurezza
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            
             optimizer.step()
             
-            # Tracciamento loss
             bsz = vis.size(0)
             train_loss += loss.item() * bsz
             total_cls_loss += classification_loss.item() * bsz
             total_align_loss += align_loss.item() * bsz
             
-            # Registriamo le probabilità per l'analisi a fine epoca
             with torch.no_grad():
                 probs = torch.sigmoid(logits).cpu().numpy()
                 epoch_probs.extend(probs)
                 epoch_gts.extend(lbl.cpu().numpy())
 
-        # Calcolo medie dell'epoca
         avg_loss = train_loss / len(train_dataset)
         avg_cls = total_cls_loss / len(train_dataset)
         avg_align = total_align_loss / len(train_dataset)
         
-        # Calcolo separazione live
         epoch_probs = np.array(epoch_probs)
         epoch_gts = np.array(epoch_gts)
         
@@ -129,13 +137,12 @@ def run_debug():
         mean_prob_gt0 = epoch_probs[epoch_gts == 0].mean() if len(epoch_probs[epoch_gts == 0]) > 0 else 0
         live_sep = mean_prob_gt1 - mean_prob_gt0
 
-        # Log avanzato visivo
-        print(f"{epoch:<6} | {avg_loss:<10.4f} | {avg_cls:<10.4f} | {avg_align:<10.4f} | {live_sep:+.4f}")
+        print(f"{epoch:<6} | {avg_loss:<10.4f} | {avg_cls:<10.4f} | {avg_align:<10.4f} | {current_align_weight:<6.3f} | {live_sep:+.4f}")
 
     # ==========================================
     # VALUTAZIONE FINALE SUL TRAINING (OVERFIT)
     # ==========================================
-    print("-" * 75)
+    print("-" * 85)
     model.eval()
     all_probs = []
     all_gts = []
@@ -159,18 +166,20 @@ def run_debug():
     sep = all_probs[all_gts==1].mean() - all_probs[all_gts==0].mean()
     acc = accuracy_score(all_gts, (all_probs >= 0.5).astype(int))
     
-    print("\n🔍 RISULTATI ANALISI OVERFITTING:")
+    print("\n🔍 RISULTATI ANALISI OVERFITTING (SOTA ARCHITECTURE):")
     print(f"  Training Accuracy: {acc:.4f}")
     print(f"  Media Probabilità (Video Corretti, GT=0): {all_probs[all_gts==0].mean():.4f} ± {all_probs[all_gts==0].std():.4f}")
     print(f"  Media Probabilità (Video con Errore, GT=1): {all_probs[all_gts==1].mean():.4f} ± {all_probs[all_gts==1].std():.4f}")
-    print(f"  Distanza di Separazione: {sep:+.4f}")
+    print(f"  Distanza di Separazione Finale: {sep:+.4f}")
 
-    if sep > 0.05:
-        print("\n  ✅ SUCCESSO: La Contrastive Loss funziona! Il modello sta distanziando le probabilità. L'architettura è salva.")
+    if sep > 0.10:
+        print("\n  🚀 ECCELLENTE: Il SOTA sta volando! Separazione forte e InfoNCE ottimizzata.")
+    elif sep > 0.05:
+        print("\n  ✅ SUCCESSO: La Contrastive Loss con Hard Negative Mining funziona bene.")
     elif sep > 0.01:
-        print("\n  ⚠️ ALLERTA: Segnale debole. Il modello impara, ma fatica a polarizzare i logit. Possibile tuning necessario su lr o temperatura.")
+        print("\n  ⚠️ ALLERTA: Segnale debole. Possibile problema di tuning iniziale.")
     else:
-        print("\n  ❌ FALLIMENTO: COLLASSO DELLE RAPPRESENTAZIONI. Il modello sta ancora predicendo 0.53 per tutti. Bisogna rivedere il layer di fusione.")
+        print("\n  ❌ FALLIMENTO: Collasso delle rappresentazioni. Il modello non converge.")
 
 if __name__ == '__main__':
     run_debug()
