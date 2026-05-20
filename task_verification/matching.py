@@ -8,24 +8,32 @@ class GraphNodeRealizer(nn.Module):
     def __init__(self, visual_dim=768, text_dim=256, joint_dim=256, dropout=0.4, max_recipe_steps=100):
         """
         Graph Node Realizer with Hungarian InfoNCE, Differential LR support,
-        Feature Dropout, Text Positional Encoding, and Hard Negative Mining.
+        Text Positional Encoding, Hard Negative Mining, and MLP Domain Adaptation.
         """
         super(GraphNodeRealizer, self).__init__()
         
-        # --- Feature Dropout ---
-        #free data augmentation strategy to improve generalization and prevent overfitting on small datasets
-        self.feature_dropout = nn.Dropout(p=0.1)
-        
         # --- Positional Encoding ---
-        # give the model a sense of step order in the task graph, which is crucial for understanding procedural tasks
         self.step_positional_encoding = nn.Embedding(max_recipe_steps, text_dim)
         
         self.temporal_conv = nn.Conv1d(
             in_channels=visual_dim, out_channels=visual_dim, kernel_size=4, stride=4, padding=1
         )
         
-        self.sim_visual_proj = nn.Linear(visual_dim, joint_dim)
-        self.sim_text_proj = nn.Linear(text_dim, joint_dim)
+        # --- Non-Linear MLP Projectors for Domain Adaptation ---
+        # changed from single linear layer to deeper MLP with non-linearity and LayerNorm
+        self.sim_visual_proj = nn.Sequential(
+            nn.Linear(visual_dim, joint_dim),
+            nn.GELU(),
+            nn.LayerNorm(joint_dim),
+            nn.Linear(joint_dim, joint_dim)
+        )
+        
+        self.sim_text_proj = nn.Sequential(
+            nn.Linear(text_dim, joint_dim),
+            nn.GELU(),
+            nn.LayerNorm(joint_dim),
+            nn.Linear(joint_dim, joint_dim)
+        )
         
         self.unified_fusion = nn.Sequential(
             nn.Linear(visual_dim + text_dim, joint_dim * 2),
@@ -40,15 +48,12 @@ class GraphNodeRealizer(nn.Module):
         self.missing_visual_embedding = nn.Parameter(torch.zeros(1, visual_dim))
         nn.init.normal_(self.missing_visual_embedding, std=0.02)
         
-        # clip style learnable temperature parameter for InfoNCE loss, initialized to 1/0.07 as commonly used in contrastive learning
+        # learnable temperature (style CLIP) to stabilize InfoNCE training 
         self.logit_scale = nn.Parameter(torch.ones([]) * np.log(1 / 0.07))
 
     def forward(self, visual_features, text_features, visual_mask, text_mask):
         batch_size, max_m, text_dim = text_features.shape
         device = visual_features.device
-        
-        visual_features = self.feature_dropout(visual_features)
-        
         positions = torch.arange(max_m, device=device).unsqueeze(0).expand(batch_size, max_m)
         text_pe = self.step_positional_encoding(positions)
         text_features = text_features + text_pe
@@ -61,7 +66,7 @@ class GraphNodeRealizer(nn.Module):
         proj_v = self.sim_visual_proj(compressed_vis)
         proj_t = self.sim_text_proj(text_features)
         
-        realized_nodes = torch.zeros(batch_size, max_m, self.sim_text_proj.out_features, device=device)
+        realized_nodes = torch.zeros(batch_size, max_m, self.sim_text_proj[-1].out_features, device=device)
         extended_visual = torch.cat([compressed_vis, self.missing_visual_embedding.expand(batch_size, 1, -1)], dim=1)
         
         aux_alignment_loss = torch.tensor(0.0, device=device)
@@ -72,6 +77,7 @@ class GraphNodeRealizer(nn.Module):
             num_text = int(text_mask[b].sum().item())
             
             node_mapping = torch.full((max_m,), fill_value=comp_n, dtype=torch.long, device=device)
+            is_matched_node = torch.zeros(max_m, dtype=torch.bool, device=device)
             
             if num_vis > 0 and num_text > 0:
                 v_norm = F.normalize(proj_v[b, :num_vis], p=2, dim=-1)
@@ -94,12 +100,10 @@ class GraphNodeRealizer(nn.Module):
                     num_matched = matched_logits.size(0)
                     
                     if num_vis > 1:
-
                         mask = torch.ones_like(matched_logits, dtype=torch.bool)
                         mask[torch.arange(num_matched), v_idx_t] = False
                         negative_logits = matched_logits[mask].view(num_matched, num_vis - 1)
                         
-                        #we pick only the top-k hardest negatives for each positive pair to compute the contrastive loss, which focuses the model on the most informative negative samples and can lead to better convergence and performance, especially in cases where there are many easy negatives that do not contribute much to learning
                         k = max(1, int(0.15 * num_vis))
                         k = min(k, negative_logits.size(1)) 
                         hard_negatives, _ = torch.topk(negative_logits, k, dim=-1)
@@ -108,7 +112,6 @@ class GraphNodeRealizer(nn.Module):
                         hn_logits = torch.cat([positives, hard_negatives], dim=1)
                         
                         hn_targets = torch.zeros(num_matched, dtype=torch.long, device=device)
-                        
                         contrastive_loss = F.cross_entropy(hn_logits, hn_targets)
                     else:
                         contrastive_loss = torch.tensor(0.0, device=device)
