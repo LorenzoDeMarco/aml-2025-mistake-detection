@@ -2,11 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GraphConv, global_mean_pool, global_max_pool
-
-try:
-    from task_verification.matching import GraphNodeRealizer
-except ModuleNotFoundError:
-    from matching import GraphNodeRealizer
+from task_verification.matching import GraphNodeRealizer
 
 class TaskVerificationGNN(nn.Module):
     def __init__(self, visual_dim=768, text_dim=256, hidden_dim=256, dropout=0.4):
