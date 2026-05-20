@@ -17,9 +17,9 @@ except ModuleNotFoundError:
 def run_debug():
     args = {
         'visual_npz':      'step_embeddings_dataset.npz',
-        'text_npz':        'text_task_graphs.npz',  
-        'graph_zip':       'task_graphs',
-        'annotations_json':'complete_step_annotations.json',
+        'text_npz':        'text_task_graphs_v2.npz',  
+        'graph_zip':       'annotations/task_graphs',
+        'annotations_json':'annotations/annotation_json/complete_step_annotations.json',
         'batch_size':      16, 
         'epochs':          25, 
         'lr':              2e-4,
