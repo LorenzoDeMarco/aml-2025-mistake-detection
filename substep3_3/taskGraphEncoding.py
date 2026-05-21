@@ -1,722 +1,204 @@
 import argparse
-import json
-import os
-import random
-from dataclasses import dataclass
 from pathlib import Path
-from turtle import ht
-from typing import Any, Dict, List, Optional, Tuple
+import open_clip
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+import numpy as np
+import json
+from scipy.optimize import linear_sum_assignment
 
 
-@dataclass
-class GraphSample:
-    video_id: str
-    edge_index: torch.Tensor      # (2,E) long
-    x_text: torch.Tensor          # (V,Dt) float
-    x_vis_node: torch.Tensor      # (V,Dv) float (aligned step feature per node; 0 if unmatched)
-    y: int                        # 0/1
-
-
-
-
-def build_edge_index(edges: Any, step_ids: Any) -> torch.Tensor:
-    if edges is None:
-        return torch.empty((2, 0), dtype=torch.long)
-
-    if isinstance(step_ids, dict):
-        step_ids = list(step_ids.keys())
-    step_id_to_index = {str(k): i for i, k in enumerate(step_ids)}
-
-    src_idx = []
-    dst_idx = []
-    for edge in edges:
-        if not isinstance(edge, (list, tuple)) or len(edge) != 2:
-            continue
-        src, dst = edge
-        src_key = str(src)
-        dst_key = str(dst)
-        if src_key in step_id_to_index and dst_key in step_id_to_index:
-            src_idx.append(step_id_to_index[src_key])
-            dst_idx.append(step_id_to_index[dst_key])
-
-    if len(src_idx) == 0:
-        return torch.empty((2, 0), dtype=torch.long)
-    return torch.tensor([src_idx, dst_idx], dtype=torch.long)
-
-
-def build_node_to_step(pack: Dict[str, Any], num_nodes: int, num_steps: int) -> torch.Tensor:
-    if "node_to_step" in pack:
-        return pack["node_to_step"].long()
-
-    node_to_step = torch.full((num_nodes,), -1, dtype=torch.long)
-    if "matched_node_indices" in pack and "matched_visual_indices" in pack:
-        vis_indices = pack["matched_visual_indices"]
-        node_indices = pack["matched_node_indices"]
-        if len(vis_indices) != len(node_indices):
-            raise ValueError("matched_visual_indices and matched_node_indices lengths differ")
-        for node_idx, step_idx in zip(node_indices, vis_indices):
-            node_to_step[int(node_idx)] = int(step_idx)
-    return node_to_step
-
-
-class GraphPTDataset(torch.utils.data.Dataset):
-    """
-    Reads Substep3 output .pt:
-      required keys:
-        - x_text OR node_text_emb OR text_embeddings
-        - step_x OR step_emb OR visual_embeddings
-        - node_to_step OR matched_node_indices + matched_visual_indices
-      optional:
-        - edge_index OR edges + step_ids OR task_graph
-      label from labels dict
-    """
-    def __init__(
-        self,
-        pt_dir: Path,
-        video_ids: List[str],
-        labels: Dict[str, int],
-    ):
-        self.pt_dir = pt_dir
-        self.video_ids = video_ids
-        self.labels = labels
-
-
-        missing = [vid for vid in video_ids if (pt_dir / f"{vid}.pt").exists() is False]
-        if missing:
-            raise FileNotFoundError(f"Missing {len(missing)} pt files in {pt_dir}, e.g. {missing[:5]}")
-
-
-        unlabeled = [vid for vid in video_ids if vid not in labels]
-        if unlabeled:
-            raise KeyError(f"Missing labels for {len(unlabeled)} videos, e.g. {unlabeled[:5]}")
-
-
-    def __len__(self) -> int:
-        return len(self.video_ids)
-
-
-    def __getitem__(self, idx: int) -> GraphSample:
-        vid = self.video_ids[idx]
-        pack = torch.load(self.pt_dir / f"{vid}.pt", map_location="cpu")
-
-        if "edge_index" in pack:
-            edge_index = pack["edge_index"].long()
-        elif "edges" in pack and "step_ids" in pack:
-            edge_index = build_edge_index(pack["edges"], pack["step_ids"])
-        elif "task_graph" in pack and "step_ids" in pack:
-            edge_index = build_edge_index(pack["task_graph"].get("edges", []), pack["step_ids"])
-        else:
-            edge_index = torch.empty((2, 0), dtype=torch.long)
-
-        k_text = find_first_key(pack, ["text_embeddings", "x_text", "node_text_emb"])
-        if k_text is None:
-            raise KeyError(f"{vid}.pt missing text_embeddings/x_text/node_text_emb")
-        x_text = pack[k_text].float()
-
-        k_step = find_first_key(pack, ["visual_embeddings", "step_x", "step_emb"])
-        if k_step is None:
-            raise KeyError(f"{vid}.pt missing visual_embeddings/step_x/step_emb")
-        step_x = pack[k_step].float()
-
-        num_nodes = x_text.size(0)
-        num_steps = step_x.size(0)
-        node_to_step = build_node_to_step(pack, num_nodes, num_steps)
-
-        x_vis_node = torch.zeros((num_nodes, step_x.size(1)), dtype=torch.float32)
-        matched = node_to_step >= 0
-        if matched.any():
-            node_idx = torch.nonzero(matched, as_tuple=False).squeeze(-1)
-            step_idx = node_to_step[node_idx]
-            x_vis_node[node_idx] = step_x[step_idx]
-
-        y = int(self.labels[vid])
-        return GraphSample(video_id=vid, edge_index=edge_index, x_text=x_text, x_vis_node=x_vis_node, y=y)
-
-def find_first_key(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
-    for k in keys:
-        if k in d:
-            return k
-    return None
-
-def sigmoid(x: torch.Tensor) -> torch.Tensor:
-    return 1 / (1 + torch.exp(-x))
-
-
-
-def set_seed(seed: int):
-    random.seed(seed)
-    os.environ["PYTHONHASHSEED"] = str(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-
-
-
-
-def try_import_sklearn_auc():
-    try:
-        from sklearn.metrics import roc_auc_score, average_precision_score
-        return roc_auc_score, average_precision_score
-    except ImportError:
-        print("Warning: scikit-learn not installed. AUC metrics will not be available.")
-        return None, None
+# ─────────────────────────────────────────────
+#  Hungarian matching
+# ─────────────────────────────────────────────
+def hungarian_matching(visual_embs: torch.Tensor,
+                        text_embs: torch.Tensor,
+                        sim_threshold: float = -1.0):
     
-def norm_subset(s: str) -> Optional[str]: #give the substep value and return the normalized subset name
-        s2 = str(s).strip().lower()
-        if s2 in {"training", "train"}:
-            return "train"
-        if s2 in {"validation", "val", "valid"}:
-            return "val"
-        if s2 in {"test", "testing"}:
-            return "test"
-        return None
+    # Cosine similarity matrix  (N x M)
+    v_norm = torch.nn.functional.normalize(visual_embs, p=2, dim=1)
+    t_norm = torch.nn.functional.normalize(text_embs,   p=2, dim=1)
+    sim_matrix = np.dot(v_norm, t_norm.T)         # (N, M) matrix of cosine similarities high value = good match
+ 
+    # Hungarian minimises cost -> negate similarity
+    # use the negative similarity matrix to find the optimal assignment of visual embeddings to text embeddings.
+    # row_ind and col_ind are the indices of the matched pairs in the original matrices.
+    row_ind, col_ind = linear_sum_assignment(-sim_matrix) 
+    visual_indices, node_indices, similarities = [], [], []
+    for r, c in zip(row_ind, col_ind):
+        s = sim_matrix[r, c]
+        if s >= sim_threshold:
+            visual_indices.append(int(r))
+            node_indices.append(int(c))
+            similarities.append(float(s))
+ 
+    return visual_indices, node_indices, similarities #return  the index of video,teext and the similariities value 
+
+
+
+def load_graph_step_edges(task_graph):
+    steps= task_graph['steps'] # steps is a list of [step_id, step_text]
+    edges= task_graph['edges']  # edges is a list of [source_step_id, target_step_id]
     
-def load_recordings_combined(recordings_json: Path, label_rule: str = "any_step_error") -> Tuple[Dict[str, int], Dict[str, List[str]]]:
-    """
-    recordings-combined.json structure:
-      {
-        "version": "...",
-        "database": {
-            "1_19": {"subset":"Training","annotations":[{"has_error":...}, ...], ...},
-            ...
-        }
-      }
-    """
-    with recordings_json.open("r", encoding="utf-8") as f:
+    step_id= list(steps.keys()) #  list of step_id
+    step_text =list(steps.values()) #  list of step_text
+    
+    return step_id, step_text, edges
+
+def load_json(json_path):
+    with open(json_path, 'r') as f:
         data = json.load(f)
-
-
-    #  real videos are in data["database"]
-    if isinstance(data, dict) and "database" in data and isinstance(data["database"], dict):
-        db = data["database"] #field in the json file that contains the video data
-    elif isinstance(data, dict):
-        # fallback: assume whole dict is db
-        db = data
-    else:
-        raise ValueError(f"Expected dict in {recordings_json}, got {type(data)}")
-
-
-    split: Dict[str, List[str]] = {"train": [], "val": [], "test": []} #inizialization of the dict
-    labels: Dict[str, int] = {}
-
-
-    for vid, item in db.items(): #vid= video_id, item= dict with video info
-        if not isinstance(item, dict):
-            continue
-
-
-        # split（ Training/Validation/Test）
-        subset = norm_subset(item.get("subset", "")) # pass the subset value
-        if subset is not None:
-            split[subset].append(str(vid)) # add the video_id to the corresponding subset list
-
-
-        # label： default use "any step has_error==True => error(0) else correct(1)"
-        anns = item.get("annotations", []) # sequence of step with has_error field
-        any_step_error = False
-        if isinstance(anns, list):
-            for a in anns:
-                if isinstance(a, dict) and bool(a.get("has_error", False)) is True: # if no step has error, has_error is False or missing, else True
-                    any_step_error = True
-                    break
-
-
-        if label_rule == "any_step_error":
-            labels[str(vid)] = 0 if any_step_error else 1
-        elif label_rule == "video_has_error":
-            labels[str(vid)] = 0 if bool(item.get("has_error", False)) else 1
-        else:
-            raise ValueError(f"Unknown label_rule={label_rule}")
-
-
-    # keep deterministic order
-    for k in split:
-        split[k] = sorted(split[k])
-
-
-    if not labels:
-        raise RuntimeError(f"No labels parsed from {recordings_json}")
-
-
-    return labels, split
-
-
-def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
-    x_texts, x_viss, edge_indices, batch_vecs, ys = [], [], [], [], []
-    node_offset = 0
-
-
-    for gi, s in enumerate(batch):
-        V = s.x_text.size(0)
-        x_texts.append(s.x_text)
-        x_viss.append(s.x_vis_node)
-        ys.append(s.y)
-
-
-        ei = s.edge_index
-        if ei.numel() > 0:
-            ei = ei + node_offset
-        edge_indices.append(ei)
-
-
-        batch_vecs.append(torch.full((V,), gi, dtype=torch.long))
-        node_offset += V
-
-
-    x_text = torch.cat(x_texts, dim=0)
-    x_vis = torch.cat(x_viss, dim=0)
-    edge_index = torch.cat(edge_indices, dim=1) if len(edge_indices) else torch.empty((2, 0), dtype=torch.long)
-    batch_vec = torch.cat(batch_vecs, dim=0)
-    y = torch.tensor(ys, dtype=torch.float32)
-
-
-    return {"x_text": x_text, "x_vis": x_vis, "edge_index": edge_index, "batch": batch_vec, "y": y}
-
-
-
-
-# -------------------------
-# Model
-# -------------------------
-class NodeFusion(nn.Module):
-    """
-    h0 = LN( Wt(x_text) + Wv(x_vis_node) + W_mask(is_matched) )
-
-    is_matched è una maschera binaria (1 se il nodo ha un visual match, 0 altrimenti).
-    Questo permette alla rete di distinguere esplicitamente nodi matchati da non-matchati,
-    evitando il bias sistematico del vecchio discrepancy term sullo zero-padding.
-
-    Il vecchio discrepancy = |ht - hv| era controproducente: per nodi non matchati
-    (x_vis=0 => hv≈0) produceva discrepancy≈|ht|, risultando in h=2*ht anziché ht.
-    """
-    def __init__(self, dim_text: int, dim_vis: int, hidden_dim: int, dropout: float = 0.1):
-        super().__init__()
-        self.text_proj = nn.Linear(dim_text, hidden_dim)
-        self.vis_proj = nn.Linear(dim_vis, hidden_dim)
-        # Proietta la maschera is_matched (scalare) nello spazio hidden
-        self.mask_proj = nn.Linear(1, hidden_dim, bias=False)
-        self.ln = nn.LayerNorm(hidden_dim)
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor) -> torch.Tensor:
-        # is_matched: 1 se almeno un elemento di x_vis è non-zero, 0 altrimenti
-        is_matched = (x_vis.abs().sum(dim=-1, keepdim=True) > 0).float()  # (N, 1)
-
-        ht = self.drop(self.text_proj(x_text))
-        hv = self.drop(self.vis_proj(x_vis))
-        hm = self.mask_proj(is_matched)  # (N, hidden_dim)
-
-        # Somma pulita: testo + visuale (zero per non-matchati) + segnale esplicito di match
-        h = ht + hv + hm
-        return self.ln(h)
-
-
-
-
-class DiGraphConv(nn.Module):
-    """
-    Simple directed message passing:
-      agg_v = sum/mean_{(u->v)} W_msg x_u
-      x'_v = act( W_self x_v + agg_v )
-    """
-    def __init__(self, dim: int, dropout: float = 0.1, aggr: str = "mean"):
-        super().__init__()
-        assert aggr in {"sum", "mean"}
-        self.aggr = aggr
-        self.msg = nn.Linear(dim, dim, bias=False)
-        self.self_lin = nn.Linear(dim, dim, bias=True)
-        self.ln = nn.LayerNorm(dim)
-        self.drop = nn.Dropout(dropout)
-
-
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        if edge_index.numel() == 0:
-            out = self.self_lin(x)
-            out = F.relu(out)
-            return self.ln(self.drop(out))
-
-
-        src, dst = edge_index[0], edge_index[1]
-        msg = self.msg(x[src])
-
-
-        agg = torch.zeros_like(x)
-        agg.index_add_(0, dst, msg)
-
-
-        if self.aggr == "mean":
-            deg = torch.zeros((x.size(0),), device=x.device, dtype=x.dtype)
-            deg.index_add_(0, dst, torch.ones_like(dst, dtype=x.dtype))
-            agg = agg / deg.clamp(min=1.0).unsqueeze(-1)
-
-
-        out = self.self_lin(x) + agg
-        out = F.relu(out)
-        out = self.ln(out)
-        return self.drop(out)
-
-
-
-
-def global_mean_pool(x: torch.Tensor, batch: torch.Tensor, num_graphs: int) -> torch.Tensor:
-    dim = x.size(-1)
-    out = torch.zeros((num_graphs, dim), device=x.device, dtype=x.dtype)
-    out.index_add_(0, batch, x)
-    cnt = torch.zeros((num_graphs,), device=x.device, dtype=x.dtype)
-    cnt.index_add_(0, batch, torch.ones_like(batch, dtype=x.dtype))
-    return out / cnt.clamp(min=1.0).unsqueeze(-1)
-
-
-def global_max_pool(x: torch.Tensor, batch: torch.Tensor, num_graphs: int) -> torch.Tensor:
-    """
-    Max pooling over nodes per graph.
-    Focalizza il classificatore sui nodi più attivi/anomali
-    invece di diluire il segnale con la media.
-    """
-    dim = x.size(-1)
-    # Inizializza con -inf per il corretto max
-    out = torch.full((num_graphs, dim), float("-inf"), device=x.device, dtype=x.dtype)
-    # scatter max: per ogni nodo aggiorna il grafo corrispondente
-    for i in range(x.size(0)):
-        g = batch[i].item()
-        out[g] = torch.maximum(out[g], x[i])
-    # Fallback: se un grafo non ha nodi (edge case) porta a zero
-    out[out == float("-inf")] = 0.0
-    return out
-
-
-
-
-class GraphClassifier(nn.Module):
-    def __init__(
-        self,
-        dim_text: int,
-        dim_vis: int,
-        hidden_dim: int = 256,
-        num_layers: int = 3,
-        dropout: float = 0.2,
-        aggr: str = "mean",
-    ):
-        super().__init__()
-        self.fusion = NodeFusion(dim_text, dim_vis, hidden_dim, dropout=dropout)
-        self.layers = nn.ModuleList([DiGraphConv(hidden_dim, dropout=dropout, aggr=aggr) for _ in range(num_layers)])
-
-
-        self.head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1),
-        )
-
-
-    def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
-        h = self.fusion(x_text, x_vis)
-        for layer in self.layers:
-            h = h + layer(h, edge_index)  # residual
-        num_graphs = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
-        # Max pool: cattura i nodi più anomali senza diluire il segnale con la media
-        g = global_max_pool(h, batch, num_graphs)
-        logits = self.head(g).squeeze(-1)
-        return logits
-
-
-
-
-# -------------------------
-# Train / Eval
-# -------------------------
-@torch.no_grad()
-def eval_epoch(model: nn.Module, loader, device: torch.device) -> Dict[str, float]:
-    model.eval()
-    all_logits, all_y = [], []
-
-
-    for batch in loader:
-        x_text = batch["x_text"].to(device)
-        x_vis = batch["x_vis"].to(device)
-        edge_index = batch["edge_index"].to(device)
-        bvec = batch["batch"].to(device)
-        y = batch["y"].to(device)
-
-
-        logits = model(x_text, x_vis, edge_index, bvec)
-        all_logits.append(logits.detach().cpu())
-        all_y.append(y.detach().cpu())
-
-
-    logits = torch.cat(all_logits, dim=0)
-    y = torch.cat(all_y, dim=0)
-
-
-    prob = sigmoid(logits)
-    pred = (prob >= 0.5).long()
-    y_int = y.long()
-
-
-    tp = int(((pred == 1) & (y_int == 1)).sum())
-    tn = int(((pred == 0) & (y_int == 0)).sum())
-    fp = int(((pred == 1) & (y_int == 0)).sum())
-    fn = int(((pred == 0) & (y_int == 1)).sum())
-
-
-    acc = (tp + tn) / max(1, tp + tn + fp + fn)
-    prec = tp / max(1, tp + fp)
-    rec = tp / max(1, tp + fn)
-    f1 = 2 * prec * rec / max(1e-12, prec + rec)
-
-
-    roc_auc_score, average_precision_score = try_import_sklearn_auc()
-    auc = float("nan")
-    pr_auc = float("nan")
-    if roc_auc_score is not None:
-        try:
-            auc = float(roc_auc_score(y.numpy(), prob.numpy()))
-            pr_auc = float(average_precision_score(y.numpy(), prob.numpy()))
-        except Exception:
-            pass
-
-
-    return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "auc": auc, "pr_auc": pr_auc}
-
-
-
-
-def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, grad_clip: float, pos_weight: torch.Tensor) -> float:
-    model.train()
-    total_loss = 0.0
-    total_n = 0
-
-
-    for batch in loader:
-        x_text = batch["x_text"].to(device)
-        x_vis = batch["x_vis"].to(device)
-        edge_index = batch["edge_index"].to(device)
-        bvec = batch["batch"].to(device)
-        y = batch["y"].to(device)
-
-
-        logits = model(x_text, x_vis, edge_index, bvec)
-
-        
-
-        # nella train_one_epoch passa pos_weight
-        loss = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
-        #loss = F.binary_cross_entropy_with_logits(logits, y)
-
-
-        optimizer.zero_grad(set_to_none=True)
-        loss.backward()
-        if grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
-        optimizer.step()
-
-
-        bs = y.size(0)
-        total_loss += float(loss.item()) * bs
-        total_n += bs
-
-
-    return total_loss / max(1, total_n)
-
-
+    return data
+
+def recipe_from__id(recipe_id):
+    return recipe_id.split("_")[0]
+
+def create_recipeid_to_json_map(avg_csv, task_graph_dir): 
+    import csv
+    recipeid_to_json = {}
+    with open(avg_csv, 'r') as f:
+        reader = csv.DictReader(f)
+        #colonne = reader.fieldnames
+        #print(f"Columns in {avg_csv}: {colonne}")
+        for row in reader:
+            recipe_id = row['activity_id'] 
+            recipe_name = row['activity_name']
+            if "=" in row['activity_id'] or "Average" in row['activity_id'] or row['activity_id'] == "":
+                # Skip the average row which is not a real recipe
+                continue
+            
+            #print(f"Mapping recipe_id {recipe_id} to recipe name '{recipe_name}'...")
+            slugname = recipe_name.lower().replace(' ', '')#json file are in lower letter and no space
+            json_path = task_graph_dir / f"{slugname}.json"
+            if json_path.exists():
+                recipeid_to_json[recipe_id] = json_path
+            else:
+                print(f"Warning: JSON file not found for recipe_id {recipe_id} (expected at {json_path})")
+    return recipeid_to_json
 
 
 def main():
     ap = argparse.ArgumentParser()
 
 
-    ap.add_argument("--graph_pt_dir", required=True, help="Substep3 output dir (each video_id.pt)")
-    ap.add_argument("--recordings_json", required=True, help="CaptainCook4D recordings-combined.json")
-    ap.add_argument("--label_rule", choices=["any_step_error", "video_has_error"], default="any_step_error",
-                    help="How to build video-level label: default uses annotations[*].has_error.")
+    ap.add_argument("--substep1_dir", required=True, help="Directory with Substep1 .npz (step embeddings)", default='../output_KFold_1s_step_embedding')
+    ap.add_argument("--task_graph_dir", required=True, help="Directory task_graphs/*.json", default='../annotations/task_graphs')
+    ap.add_argument("--avg_csv", required=True, help="average_segment_length.csv (recipe_id -> recipe name)", default='../annotations/annotation_csv/average_segment_length.csv')
+    ap.add_argument("--out_dir", required=True, help="Output directory (per-video .pt)", default='./output_3_3')
 
 
-    ap.add_argument("--output_dir", required=True, help="Save checkpoints/logs here")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
 
 
-    # if subset missing, fallback random split
-    ap.add_argument("--train_ratio", type=float, default=0.8)
-    ap.add_argument("--val_ratio", type=float, default=0.1)
-    ap.add_argument("--seed", type=int, default=123)
+
+    ap.add_argument("--text_batch_size", type=int, default=64)
+    ap.add_argument("--normalize", action="store_true", help="L2 normalize embeddings for matching")
 
 
-    # training
-    ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--weight_decay", type=float, default=1e-4)
-    ap.add_argument("--grad_clip", type=float, default=1.0)
-
-
-    # model
-    ap.add_argument("--hidden_dim", type=int, default=256)
-    ap.add_argument("--num_layers", type=int, default=3)
-    ap.add_argument("--dropout", type=float, default=0.2)
-    ap.add_argument("--aggr", choices=["sum", "mean"], default="mean")
-
-
-    ap.add_argument("--num_workers", type=int, default=0)
-    ap.add_argument("--eval_only", action="store_true")
-    ap.add_argument("--resume", default="", help="Path to checkpoint .pt")
+    # matching
+    ap.add_argument("--sim_threshold", type=float, default=-1.0,
+                    help="Drop matches with cosine sim < threshold. Use -1 to keep all assigned pairs.")
+    #ap.add_argument("--topk_steps", type=int, default=0, help="Optional truncate step sequence (0 keep all)")
 
 
     args = ap.parse_args()
 
+     
+    substep1_dir = Path(args.substep1_dir)
+    task_graph_dir = Path(args.task_graph_dir)
+    avg_csv = Path(args.avg_csv)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    set_seed(args.seed)
-
-
-    pt_dir = Path(args.graph_pt_dir)
-
-    labels, split = load_recordings_combined(Path(args.recordings_json), label_rule=args.label_rule)
-
-    # only keep vids that have .pt and label
-    pt_vids = set(p.stem for p in pt_dir.glob("*.pt"))
-    labeled_vids = set(labels.keys())
-    usable = sorted(list(pt_vids & labeled_vids))
-    if not usable:
-        raise RuntimeError(f"No usable samples: check {pt_dir} and recordings_json labels")
-
-
-    # build split from subset (preferred)
-    train_vids = [v for v in split.get("train", []) if v in usable]
-    val_vids = [v for v in split.get("val", []) if v in usable]
-    test_vids = [v for v in split.get("test", []) if v in usable]
-
-    train_ds = GraphPTDataset(pt_dir, train_vids, labels)
-    val_ds = GraphPTDataset(pt_dir, val_vids, labels) if val_vids else None
-    test_ds = GraphPTDataset(pt_dir, test_vids, labels) if test_vids else None
-
-
-    train_loader = torch.utils.data.DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
-        collate_fn=collate_graph_samples,
-        pin_memory=True,
-    )
-    val_loader = torch.utils.data.DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_graph_samples,
-        pin_memory=True,
-    ) if val_ds else None
-    test_loader = torch.utils.data.DataLoader(
-        test_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_graph_samples,
-        pin_memory=True,
-    ) if test_ds else None
-
-
-    # infer dims from one sample
-    sample0 = torch.load(pt_dir / f"{train_vids[0]}.pt", map_location="cpu")
-    k_text = find_first_key(sample0, ["text_embeddings", "x_text", "node_text_emb"])
-    k_step = find_first_key(sample0, ["visual_embeddings", "step_x", "step_emb"])
-    if k_text is None or k_step is None:
-        raise KeyError(f"pt sample missing required keys. Found keys: {list(sample0.keys())}")
-
-
-    dim_text = int(sample0[k_text].shape[1])
-    dim_vis = int(sample0[k_step].shape[1])
-
+    projection = None  # lazy init after we know D
 
     device = torch.device(args.device)
-    model = GraphClassifier(
-        dim_text=dim_text,
-        dim_vis=dim_vis,
-        hidden_dim=args.hidden_dim,
-        num_layers=args.num_layers,
-        dropout=args.dropout,
-        aggr=args.aggr,
-    ).to(device)
 
+    # I must obtain a map from recipe_id to recipe name from the avg_csv 
+    map_recipeid_to_json= create_recipeid_to_json_map(avg_csv, task_graph_dir) #(1 ->microwaveegg)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+    #---Load PE model----
+    model_name= "hf-hub:timm/PE-Core-B-16" # Optimal solution for training
+    print(f"Loading model {model_name} on device {device}...")
+    model, _, _ = open_clip.create_model_and_transforms(model_name)
+    model = model.to(device)
+    tokenizer = open_clip.get_tokenizer(model_name)
 
+    #---Load npz-----
+    for  npz in substep1_dir.glob("*.npz"):
+        recipe_id = npz.stem # from the file 1_7.npz -> 1_7
+        recipe= recipe_from__id(recipe_id) # from 1_7 -> 1
+        if recipe not in map_recipeid_to_json:
+            print(f"Skipping {recipe_id} as no corresponding JSON found.")
+            continue
+        recipe_path = map_recipeid_to_json[recipe]
+        print(f"Processing {recipe_id} with JSON {recipe_path}...")
 
-    out_dir = Path(args.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_best = out_dir / "best.pt"
-    ckpt_last = out_dir / "last.pt"
+        #---Load step embeddings---
+        data = np.load(npz)
+        step_embeddings = torch.from_numpy(data['step_embedding']).to(device)  # (num_steps, embedding_dim)
+        step_interval= torch.from_numpy(data['segments'])  # (num_steps, 2) start/end frame index for each step
+        step_label = torch.from_numpy(data['label'])  # (num_steps,) step label index for each step
+        
+        #---Load task graph JSON---
+        task_graph = load_json(recipe_path)
 
+        #---Encode task graph text---
+        step_ids, step_texts, edges = load_graph_step_edges(task_graph)
+        
 
-    # resume / eval-only
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location="cpu")
-        model.load_state_dict(ckpt["model"])
-        if "optimizer" in ckpt and not args.eval_only:
-            optimizer.load_state_dict(ckpt["optimizer"])
-        print(f"[RESUME] loaded {args.resume}")
+        text_embeddings = []
+        for i in range(0, len(step_texts), args.text_batch_size):
+            batch_texts = step_texts[i:i+args.text_batch_size]
+            tokens = tokenizer(batch_texts).to(device)
+            with torch.no_grad():
+                batch_embeddings = model.encode_text(tokens)
+                if args.normalize:
+                    batch_embeddings = torch.nn.functional.normalize(batch_embeddings, p=2, dim=1)
+                text_embeddings.append(batch_embeddings.to(device))
+        
+        text_embeddings = torch.cat(text_embeddings, dim=0)  # (num_nodes, embedding_dim)
 
+        #---Save combined data without matching (for debugging)---
+        #out_path = out_dir / f"{recipe_id}.pt"
+        #torch.save({
+        #    'step_embeddings': step_embeddings.to(device),
+        #   'text_embeddings': text_embeddings.to(device),
+        #    'task_graph': task_graph
+        #}, out_path)
+        #print(f"Saved combined data to {out_path}")
 
-    if args.eval_only:
-        if val_loader:
-            print("[VAL]", eval_epoch(model, val_loader, device))
-        if test_loader:
-            print("[TEST]", eval_epoch(model, test_loader, device))
-        return
+                
+        vis_idx, node_idx, sims = hungarian_matching(
+            step_embeddings, 
+            text_embeddings, 
+            sim_threshold=args.sim_threshold
+        )
+        
+        print(f"  Matched {len(vis_idx)} / {min(len(text_embeddings), step_embeddings.shape[0])} pairs")
 
-
-    best_key = "auc"  # prefer AUC if available; fallback to f1
-    best_score = -1e9
-
-    #for 
-    num_pos = sum(1 for v in train_vids if labels[v] == 1)
-    num_neg = len(train_vids) - num_pos
-    pos_weight = torch.tensor([num_neg / max(1, num_pos)], device=device) # weight for the positive class in BCE loss to handle imbalance
-
-    for epoch in range(1, args.epochs + 1):
-        tr_loss = train_one_epoch(model, train_loader, device, optimizer, args.grad_clip, pos_weight)
-
-
-        val_metrics = None
-        if val_loader:
-            val_metrics = eval_epoch(model, val_loader, device)
-
-
-        if val_metrics:
-            score = val_metrics.get(best_key, float("nan"))
-            if score != score:  # nan
-                score = val_metrics.get("f1", 0.0)
-        else:
-            score = -tr_loss
-
-
-        torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch}, ckpt_last)
-
-
-        if score > best_score:
-            best_score = score
-            torch.save(
-                {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch, "best_score": best_score},
-                ckpt_best
-            )
-
-
-        if val_metrics:
-            print(f"Epoch {epoch:03d} | loss={tr_loss:.4f} | val={val_metrics} | best_score={best_score:.4f}")
-        else:
-            print(f"Epoch {epoch:03d} | loss={tr_loss:.4f} | best_score={best_score:.4f}")
-
-
-    # final test with best
-    if ckpt_best.exists():
-        ckpt = torch.load(ckpt_best, map_location="cpu")
-        model.load_state_dict(ckpt["model"])
-
-
-    if test_loader:
-        print("[FINAL TEST]", eval_epoch(model, test_loader, device))
+       
+        out_path = out_dir / f"{recipe_id}.pt"
+        torch.save({
+            'visual_embeddings':       step_embeddings.to(device),
+            'text_embeddings':         text_embeddings.to(device),
+            
+            #result of matching
+            'matched_visual_indices':  vis_idx, # index of the matched step embedding
+            'matched_node_indices':    node_idx, # index of the matched node in the graph
+            'match_similarities':      sims,    # cosine similarity value
+            
+            # Metadati del task graph
+            'step_ids':       step_ids,
+            'step_texts':     step_texts,
+            'edges':          edges,
+            'step_intervals': step_interval.to(device),
+            'step_labels':    step_label.to(device),
+            'task_graph':     task_graph,
+        }, out_path)
+        
+        print(f"  Saved (Pure Matching) -> {out_path}")
+    
 
 
 

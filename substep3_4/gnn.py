@@ -23,6 +23,7 @@ class GraphSample:
     edge_index: torch.Tensor      # (2,E) long
     x_text: torch.Tensor          # (V,Dt) float
     x_vis_node: torch.Tensor      # (V,Dv) float (aligned step feature per node; 0 if unmatched)
+    x_sim: torch.Tensor           # (V,1) float (match similarity for each node)
     y: int                        # 0/1
 
 
@@ -138,8 +139,17 @@ class GraphPTDataset(torch.utils.data.Dataset):
             step_idx = node_to_step[node_idx]
             x_vis_node[node_idx] = step_x[step_idx]
 
+        # Estrai match_similarities da taskGraphEncoding e crea x_sim per ogni nodo
+        sims = pack.get("match_similarities", [])
+        node_idx_list = pack.get("matched_node_indices", [])
+
+        x_sim = torch.zeros(x_text.size(0), 1)
+        for i, n_idx in enumerate(node_idx_list):
+            if n_idx < x_sim.size(0):
+                x_sim[n_idx] = sims[i]
+
         y = int(self.labels[vid])
-        return GraphSample(video_id=vid, edge_index=edge_index, x_text=x_text, x_vis_node=x_vis_node, y=y)
+        return GraphSample(video_id=vid, edge_index=edge_index, x_text=x_text, x_vis_node=x_vis_node, x_sim=x_sim, y=y)
 
 def find_first_key(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
     for k in keys:
@@ -259,7 +269,7 @@ def load_recordings_combined(recordings_json: Path, label_rule: str = "any_step_
 
 
 def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
-    x_texts, x_viss, edge_indices, batch_vecs, ys = [], [], [], [], []
+    x_texts, x_viss, x_sims, edge_indices, batch_vecs, ys = [], [], [], [], [], []
     node_offset = 0
 
 
@@ -267,6 +277,7 @@ def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
         V = s.x_text.size(0)
         x_texts.append(s.x_text)
         x_viss.append(s.x_vis_node)
+        x_sims.append(s.x_sim)
         ys.append(s.y)
 
 
@@ -282,12 +293,13 @@ def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
 
     x_text = torch.cat(x_texts, dim=0)
     x_vis = torch.cat(x_viss, dim=0)
+    x_sim = torch.cat(x_sims, dim=0)
     edge_index = torch.cat(edge_indices, dim=1) if len(edge_indices) else torch.empty((2, 0), dtype=torch.long)
     batch_vec = torch.cat(batch_vecs, dim=0)
     y = torch.tensor(ys, dtype=torch.float32)
 
 
-    return {"x_text": x_text, "x_vis": x_vis, "edge_index": edge_index, "batch": batch_vec, "y": y}
+    return {"x_text": x_text, "x_vis": x_vis, "x_sim": x_sim, "edge_index": edge_index, "batch": batch_vec, "y": y}
 
 
 
@@ -296,36 +308,35 @@ def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
 # Model
 # -------------------------
 class NodeFusion(nn.Module):
-    """
-    h0 = LN( Wt(x_text) + Wv(x_vis_node) + W_mask(is_matched) )
-
-    is_matched è una maschera binaria (1 se il nodo ha un visual match, 0 altrimenti).
-    Questo permette alla rete di distinguere esplicitamente nodi matchati da non-matchati,
-    evitando il bias sistematico del vecchio discrepancy term sullo zero-padding.
-
-    Il vecchio discrepancy = |ht - hv| era controproducente: per nodi non matchati
-    (x_vis=0 => hv≈0) produceva discrepancy≈|ht|, risultando in h=2*ht anziché ht.
-    """
-    def __init__(self, dim_text: int, dim_vis: int, hidden_dim: int, dropout: float = 0.1):
+    def __init__(self, dim_text: int, dim_vis: int, hidden_dim: int, dropout: float = 0.2):
         super().__init__()
         self.text_proj = nn.Linear(dim_text, hidden_dim)
         self.vis_proj = nn.Linear(dim_vis, hidden_dim)
-        # Proietta la maschera is_matched (scalare) nello spazio hidden
-        self.mask_proj = nn.Linear(1, hidden_dim, bias=False)
+        # Proiettiamo la similarità dell'Hungarian (1D) e la maschera (1D)
+        self.sim_proj = nn.Linear(2, hidden_dim) 
+        
         self.ln = nn.LayerNorm(hidden_dim)
         self.drop = nn.Dropout(dropout)
 
-    def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor) -> torch.Tensor:
-        # is_matched: 1 se almeno un elemento di x_vis è non-zero, 0 altrimenti
-        is_matched = (x_vis.abs().sum(dim=-1, keepdim=True) > 0).float()  # (N, 1)
+    def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor, x_sim: torch.Tensor) -> torch.Tensor:
+        # Maschera: 1 se c'è un match, 0 altrimenti
+        is_matched = (x_vis.abs().sum(dim=-1, keepdim=True) > 0).float()
+        
+        ht = self.text_proj(x_text)
+        hv = self.vis_proj(x_vis)
+        
+        # 1. DIFFERENZA ESPLICITA: Se testo e video non coincidono, questo vettore esplode
+        # È il segnale principale per il mistake detection
+        discrepancy = torch.abs(ht - hv) * is_matched
+        
+        # 2. INFO MATCHING: Quanto CLIP era convinto del match?
+        # x_sim deve contenere il valore numerico (es. 0.28) dall'Hungarian
+        matching_info = torch.cat([x_sim, is_matched], dim=-1)
+        hm = self.sim_proj(matching_info)
 
-        ht = self.drop(self.text_proj(x_text))
-        hv = self.drop(self.vis_proj(x_vis))
-        hm = self.mask_proj(is_matched)  # (N, hidden_dim)
-
-        # Somma pulita: testo + visuale (zero per non-matchati) + segnale esplicito di match
-        h = ht + hv + hm
-        return self.ln(h)
+        # Fusione: Testo + Video + Errore + Qualità del Match
+        h = ht + hv + discrepancy + hm
+        return self.ln(F.gelu(h)) # GELU spesso aiuta più di ReLU in questi casi
 
 
 
@@ -418,8 +429,9 @@ class GraphClassifier(nn.Module):
         self.fusion = NodeFusion(dim_text, dim_vis, hidden_dim, dropout=dropout)
         self.layers = nn.ModuleList([DiGraphConv(hidden_dim, dropout=dropout, aggr=aggr) for _ in range(num_layers)])
 
+        # MODIFICA: Il primo layer lineare ora riceve hidden_dim * 2
         self.head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim),
+            nn.Linear(hidden_dim * 2, hidden_dim), 
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_dim, 1),
@@ -436,15 +448,44 @@ class GraphClassifier(nn.Module):
                     nn.init.zeros_(m.bias)
 
 
-    def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
-        h = self.fusion(x_text, x_vis)
+    def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor, x_sim: torch.Tensor = None) -> torch.Tensor:
+        if x_sim is None:
+            x_sim = torch.zeros((x_text.size(0), 1), device=x_text.device, dtype=x_text.dtype)
+        h = self.fusion(x_text, x_vis, x_sim)
         for layer in self.layers:
             h = h + layer(h, edge_index)  # residual
+        
         num_graphs = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
-        # Max pool: cattura i nodi più anomali senza diluire il segnale con la media
-        g = global_max_pool(h, batch, num_graphs)
+        
+        # MODIFICA: Calcola sia Mean che Max Pool
+        g_mean = global_mean_pool(h, batch, num_graphs)
+        g_max = global_max_pool(h, batch, num_graphs)
+        
+        # Concatena i due vettori lungo la dimensione delle feature
+        g = torch.cat([g_mean, g_max], dim=-1) # Dimensione risultante: (num_graphs, hidden_dim * 2)
+        
         logits = self.head(g).squeeze(-1)
         return logits
+    
+
+class FocalLoss(nn.Module): #Aggiunta per migliorare
+    def __init__(self, alpha=0.7, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha # Bilanciamento classi (0.25 favorisce la minoranza se gamma > 0)
+        self.gamma = gamma # Fattore di "focus" sugli esempi difficili
+        self.reduction = reduction
+
+    def forward(self, logits, targets):
+        p = torch.sigmoid(logits)
+        ce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
+        p_t = p * targets + (1 - p) * (1 - targets)
+        loss = ce_loss * ((1 - p_t) ** self.gamma)
+
+        if self.alpha >= 0:
+            alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
+            loss = alpha_t * loss
+
+        return loss.mean() if self.reduction == 'mean' else loss.sum()
 
 
 
@@ -463,10 +504,11 @@ def eval_epoch(model: nn.Module, loader, device: torch.device) -> Dict[str, floa
         x_vis = batch["x_vis"].to(device)
         edge_index = batch["edge_index"].to(device)
         bvec = batch["batch"].to(device)
+        x_sim = batch["x_sim"].to(device)
         y = batch["y"].to(device)
 
 
-        logits = model(x_text, x_vis, edge_index, bvec)
+        logits = model(x_text, x_vis, edge_index, bvec, x_sim)
         all_logits.append(logits.detach().cpu())
         all_y.append(y.detach().cpu())
 
@@ -519,9 +561,10 @@ def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, g
         x_vis = batch["x_vis"].to(device)
         edge_index = batch["edge_index"].to(device)
         bvec = batch["batch"].to(device)
+        x_sim = batch["x_sim"].to(device)
         y = batch["y"].to(device)
 
-        logits = model(x_text, x_vis, edge_index, bvec)
+        logits = model(x_text, x_vis, edge_index, bvec, x_sim)
 
         # Label smoothing: trasforma target 0->eps, 1->(1-eps).
         # Evita che il modello si "specializzi" troppo su target duri 0/1,
@@ -530,7 +573,9 @@ def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, g
             y_smooth = y * (1.0 - label_smoothing) + 0.5 * label_smoothing
         else:
             y_smooth = y
-        loss = F.binary_cross_entropy_with_logits(logits, y_smooth, pos_weight=pos_weight)
+
+        focal_loss_fn = FocalLoss(alpha=0.5, gamma=2.0) # Prova alpha 0.5 per bilanciare equamente
+        loss = focal_loss_fn(logits, y)
 
 
         optimizer.zero_grad(set_to_none=True)
