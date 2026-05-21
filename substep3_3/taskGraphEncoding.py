@@ -12,27 +12,48 @@ from scipy.optimize import linear_sum_assignment
 #  Hungarian matching
 # ─────────────────────────────────────────────
 def hungarian_matching(visual_embs: torch.Tensor,
-                        text_embs: torch.Tensor,
-                        sim_threshold: float = -1.0):
+                       text_embs: torch.Tensor,
+                       sim_threshold: float = -1.0):
     
-    # Cosine similarity matrix  (N x M)
+    # 1. Cosine similarity matrix (N x M)
     v_norm = torch.nn.functional.normalize(visual_embs, p=2, dim=1)
     t_norm = torch.nn.functional.normalize(text_embs,   p=2, dim=1)
-    sim_matrix = np.dot(v_norm, t_norm.T)         # (N, M) matrix of cosine similarities high value = good match
+    sim_matrix = np.dot(v_norm, t_norm.T) # (N, M) matrix of cosine similarities
  
-    # Hungarian minimises cost -> negate similarity
-    # use the negative similarity matrix to find the optimal assignment of visual embeddings to text embeddings.
-    # row_ind and col_ind are the indices of the matched pairs in the original matrices.
+    # 2. Hungarian minimizes cost -> negate similarity
     row_ind, col_ind = linear_sum_assignment(-sim_matrix) 
+    
     visual_indices, node_indices, similarities = [], [], []
+    
+    # Sets to track unmatched components for error analysis
+    total_visual_steps = set(range(visual_embs.shape[0]))
+    total_text_nodes = set(range(text_embs.shape[0]))
+    
     for r, c in zip(row_ind, col_ind):
         s = sim_matrix[r, c]
         if s >= sim_threshold:
             visual_indices.append(int(r))
             node_indices.append(int(c))
             similarities.append(float(s))
+            
+    # Calculate unmatched indices explicitly
+    unmatched_visual = list(total_visual_steps - set(visual_indices))
+    unmatched_text = list(total_text_nodes - set(node_indices))
+    
+    # Error Matching logic: define an anomaly flag if critical alignments are broken
+    # or if step execution counts don't align with the recipe requirements
+    has_errors = len(unmatched_text) > 0 or len(unmatched_visual) > 0
+    avg_similarity = np.mean(similarities) if similarities else 0.0
  
-    return visual_indices, node_indices, similarities #return  the index of video,teext and the similariities value 
+    return {
+        'visual_indices': visual_indices,
+        'node_indices': node_indices,
+        'similarities': similarities,
+        'unmatched_visual_indices': unmatched_visual,
+        'unmatched_text_indices': unmatched_text,
+        'avg_similarity': avg_similarity,
+        'has_errors': has_errors
+    }
 
 
 
@@ -169,26 +190,29 @@ def main():
         #print(f"Saved combined data to {out_path}")
 
                 
-        vis_idx, node_idx, sims = hungarian_matching(
+        # Run upgraded error matching algorithm
+        matching_results = hungarian_matching(
             step_embeddings, 
             text_embeddings, 
             sim_threshold=args.sim_threshold
         )
         
-        print(f"  Matched {len(vis_idx)} / {min(len(text_embeddings), step_embeddings.shape[0])} pairs")
-
-       
+        # Save comprehensive representation with perception metrics AND error indicators
         out_path = out_dir / f"{recipe_id}.pt"
         torch.save({
             'visual_embeddings':       step_embeddings.to(device),
             'text_embeddings':         text_embeddings.to(device),
             
-            #result of matching
-            'matched_visual_indices':  vis_idx, # index of the matched step embedding
-            'matched_node_indices':    node_idx, # index of the matched node in the graph
-            'match_similarities':      sims,    # cosine similarity value
+            # Results of Error Matching
+            'matched_visual_indices':  matching_results['visual_indices'],
+            'matched_node_indices':    matching_results['node_indices'],
+            'match_similarities':      matching_results['similarities'],
+            'unmatched_visual_indices': matching_results['unmatched_visual_indices'],
+            'unmatched_text_indices':  matching_results['unmatched_text_indices'],
+            'avg_similarity':          matching_results['avg_similarity'],
+            'has_errors':              matching_results['has_errors'],
             
-            # Metadati del task graph
+            # Perception & Metadata
             'step_ids':       step_ids,
             'step_texts':     step_texts,
             'edges':          edges,
@@ -196,7 +220,8 @@ def main():
             'step_labels':    step_label.to(device),
             'task_graph':     task_graph,
         }, out_path)
-        
+
+
         print(f"  Saved (Pure Matching) -> {out_path}")
     
 
