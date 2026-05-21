@@ -13,12 +13,20 @@ from scipy.optimize import linear_sum_assignment
 # ─────────────────────────────────────────────
 def hungarian_matching(visual_embs: torch.Tensor,
                        text_embs: torch.Tensor,
+                       step_texts: list, # for eliminating START/END nodes
                        sim_threshold: float = -1.0):
+    IGNORE_KEYWORDS = ["start", "end"] 
+    # 1. Trova gli indici dei veri passi della ricetta (escludendo start/end) 
+    real_text_indices = [ i for i, text in enumerate(step_texts) if not any(kw in text.lower() for kw in IGNORE_KEYWORDS) ] 
+    # Se per qualche motivo non ci sono nodi validi, salvataggio di sicurezza 
+    if not real_text_indices: return [], [], [], list(range(visual_embs.shape[0])), [], 0.0, False 
+    # 2. Seleziona solo gli embedding del testo REALI 
+    filtered_text_embs = text_embs[real_text_indices] 
     
     # 1. Cosine similarity matrix (N x M)
     v_norm = torch.nn.functional.normalize(visual_embs, p=2, dim=1)
     t_norm = torch.nn.functional.normalize(text_embs,   p=2, dim=1)
-    sim_matrix = np.dot(v_norm, t_norm.T) # (N, M) matrix of cosine similarities
+    sim_matrix = np.dot(v_norm.detach().cpu().numpy(), t_norm.detach().cpu().numpy().T) # (N, M) matrix of cosine similarities
  
     # 2. Hungarian minimizes cost -> negate similarity
     row_ind, col_ind = linear_sum_assignment(-sim_matrix) 
@@ -38,11 +46,13 @@ def hungarian_matching(visual_embs: torch.Tensor,
             
     # Calculate unmatched indices explicitly
     unmatched_visual = list(total_visual_steps - set(visual_indices))
-    unmatched_text = list(total_text_nodes - set(node_indices))
+
+    matched_text_set = set(node_indices)
+    unmatched_text = [i for i in real_text_indices if i not in matched_text_set]
     
     # Error Matching logic: define an anomaly flag if critical alignments are broken
     # or if step execution counts don't align with the recipe requirements
-    has_errors = len(unmatched_text) > 0 or len(unmatched_visual) > 0
+    has_errors = len(unmatched_text) > 0 
     avg_similarity = np.mean(similarities) if similarities else 0.0
  
     return {
@@ -194,6 +204,7 @@ def main():
         matching_results = hungarian_matching(
             step_embeddings, 
             text_embeddings, 
+            step_texts=step_texts,
             sim_threshold=args.sim_threshold
         )
         
@@ -221,7 +232,8 @@ def main():
             'task_graph':     task_graph,
         }, out_path)
 
-
+        print(f'Processed {recipe_id}: {len(matching_results["visual_indices"])} matches, ')
+        print(f' Avg similarity: {matching_results["avg_similarity"]:.4f}, Errors detected: {matching_results["has_errors"]}')
         print(f"  Saved (Pure Matching) -> {out_path}")
     
 

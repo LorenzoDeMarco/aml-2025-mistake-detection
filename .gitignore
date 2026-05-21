@@ -167,6 +167,8 @@ wandb
 stats
 error_recognition_best
 substep3_3/
+substep3_2/result
+substep3_2/result_1s
 
 results
 .vscode
