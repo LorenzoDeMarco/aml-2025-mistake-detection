@@ -294,6 +294,11 @@ def parse_args():
         dest="wandb_run",
         help="Nome della run W&B. Se non specificato, W&B ne genera uno automatico.",
     )
+    parser.add_argument(
+        '--features_dir',
+        type=str, 
+        default=r"output_KFold_1s_step_embedding"
+    )
     return parser.parse_args()
 
 
@@ -305,7 +310,7 @@ def main():
     #KFold
     #features_dir = Path("output_KFold__step_embedding")
     #KFold 1s
-    features_dir = Path("output_KFold_1s_step_embedding")
+    features_dir = Path(args.features_dir)
     #Normal
     #features_dir = Path("output_step_embeddings")
     label_csv    = Path("annotations/annotation_csv/step_annotations.csv")

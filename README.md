@@ -1,4 +1,4 @@
-# AML/DAAI 2025 - Mistake Detection Project
+﻿# AML/DAAI 2025 - Mistake Detection Project
 
 ## Environment Setup
 
@@ -98,21 +98,32 @@ python .\multi_step_localization\kfold_pipeline.py
 
 ### Step Localization 
 I've changed the segment_sec from 0.53 to 1 that is the frequency used during the features extraction. 
-In adiction i've decided to use only the prediction with maximum score for every interval (start,end) using IoU(Intersection over Unit) set to 0.5 so if the intervals are quite overlapped the model delet the one with the lower score 
+In adiction i've decided to use only the prediction with maximum score for every interval (start,end) using IoU(Intersection over Unit) set to 0.5 so if the intervals are quite overlapped the model delete the one with the lower score 
 
 ```
 python .\multi_step_localization\step_localization.py --pkl_dir ./ActionFormer_eval --features_dir ./data/features/perception_encoder/npz_features --output_dir ./output_KFold_1s_step_embedding --nms_iou_threshold 0.5
 
 ```
 
+### Ground Truth annotations
+
+For learning in a better way if the model is doing correctly (both Trasformer and GNN) i've decided to use the annotations take from step_annotation.json instead of taking the step boundaries from actionFormer to avoid to have also the noise from actionFormer for doing the evaluation and understand correctly how the model learn from the dataset in input
+
+```
+python .\multi_step_localization\ground_truth_localization.py --output_dir .\output_Kfold_groundTruth\
+
+```
+
 # Trasformer for Binary classification
 
-We create a transformer that predict the label of the video from the correct classification of every step with the ground truth label given by the "annotations/annotation_csv/step_annotations.csv" 
+We create a transformer that predict the label of the video created from the previous step (both from actionFormer and groundTruth) from the correct classification of every step with the ground truth label given by the "annotations/annotation_csv/step_annotations.csv" 
+
+The idea to improve performance is to use a LOGO (Leave-One-Group-Out) strategy. The model is trained on all recipes minus one, and then evaluated using the created splits. This method leads to better overall results
 
 ```
  python .\substep3_2\loo_setting.py --wandb --wandb-project loo-transformer --wandb-run adamw_IoU3 --output substep3_2/result_1s/pred_IoU.json
 ```
-
+### ActionFormer result
 achieving best result with the hyperparams:
 | Hyperparams | Value |
 | :--- | :--- |
@@ -137,11 +148,192 @@ with the resault of:
 | **AUC (ROC)** | 0.635 |
 | **PR-AUC** | 0.6483 |
 
+### GroundTruth result
+
+achieving best result with the hyperparams:
+| Hyperparams | Value |
+| :--- | :--- |
+| **Input Dimension** | 1024 |
+| **Model Dimension** | 256 |
+| **Number of Heads** | 4 |
+| **Number of Layers** | 1 |
+| **Dropout** | 0.1 |
+| **Learning Rate** | 2e-4 |
+| **Epochs** | 10 |
+| **Optimizer** | AdamW / Adam |
+| **Weight Decay** | 0.01 (Default) |
+
+with the resault of:
+
+| Metrics | Value |
+| :--- | :--- |
+| **Accuracy** | 0.5313 |
+| **Precision** | 0.5699 |
+| **Recall** | 0.7409 |
+| **F1-Score** | 0.6442 |
+| **AUC (ROC)** | 0.5345 |
+| **PR-AUC** | 0.6108 |
+
+
+
 # Task Graph Encoding
 
+### Overview
+
+This module bridges the gap between raw video-based action localization and semantic recipe understanding. Its primary function is to transform high-dimensional video features into structured Task Graphs, enabling the downstream verification of recipe execution.
+
+### Core Strategy: The Hungarian Matching Algorithm
+
+The most critical and interesting strategy employed in this module is the Hungarian Matching (implemented in taskGraphEncoding.py).
+
+In recipe verification, a model must align a sequence of detected visual segments with a pre-defined set of recipe steps (textual nodes). However, the video segments often contain noise, are misaligned in time, or include actions that do not correspond to any recipe step.
+
+We use the Hungarian Algorithm (via scipy.optimize.linear_sum_assignment) for obtaing the best Visual-Text  step pairs
+
+The pipeline used was: 
+- Ingore the text step [START,END] that are in the text graph but the video can't create this step so  introduce only fake pairs.
+
+- Create of the Cosine Similiarity with normalized embeddings of video and tex
+
+- Use the -Similarity matrix for having a cost matrix that we reduce with linear_sum_assignment and so in this way we obtain the most similar visual-text pairs. at the end we create an array with the unmatched node that is an important information to give to the GNN
+
+### Pipeline Architecture
+
+Feature Alignment: The module takes visual_embs (from video backbones PE-Core-B-16) and text_embs (from the same model PE-Core-B-16).
+
+Hungarian Matching: The algorithm matches these embeddings to identify which parts of the video represent actual recipe steps.
+
+Graph Encoding: Once matched, the module constructs a .pt file containing the task graph. This includes:
+
+- Matched Node Indices: Mapping of video time to recipe graph nodes.
+
+- Similarities: Confidence scores for the alignment.
+
+- Error Detection Flags: Based on whether the alignment meets the threshold criteria, marking potential anomalies (has_errors).
+
+### Data Structure
+
+The processed output for each recipe ({recipe_id}.pt) contains a comprehensive snapshot for the downstream GNN:
+
+- visual_embeddings & text_embeddings: The aligned feature space.
+
+- matched_visual_indices: The indices of video segments successfully mapped to recipe steps.
+
+- task_graph: The topological structure of the recipe.
+
+- has_errors: A boolean indicator calculated based on the matching quality and alignment.
+
+Command Used 
 ```
  python .\substep3_3\taskGraphEncoding.py --substep1_dir output_KFold_1s_step_embedding --task_graph_dir annotations/task_graphs --avg_csv annotations/annotation_csv/average_segment_length.csv --out_dir .\substep3_3\output_3_3 --text_batch_size 64 --sim_threshold 0.2
 ```
+
+
+# GNN
+
+The GNN module serves as the final decision-making engine in our pipeline. It ingests structured Task Graphs (generated by the preprocessing stage) and performs binary classification to determine if the recipe execution was correct or if a procedural error occurred.
+
+
+### Core Strategy: Topological Feature Aggregation
+
+The strategy employed in gnn.py is the use of message passing over Directed Acyclic Graphs (DAGs) to fuse heterogeneous node features (textual instructions and visual embeddings).
+
+In recipe verification, a local classification (e.g., "is this step correct?") is insufficient because a recipe is a sequence of dependencies. A step might look visually correct in isolation but be invalid if it occurs out of order or misses a preceding action.
+
+We utilize a GNN for the following reasons:
+
+- Contextual Awareness: By utilizing scatter_sum and graph-based propagation, the model "spreads" information from previous steps to current ones. If a mistake occurred in a dependency, the GNN allows the model to "see" that historical failure when evaluating the current node.
+
+- Structural Embedding: Recipes are inherently non-linear DAGs. The GNN architecture is natively designed to handle this topological structure, unlike standard Transformers or RNNs which struggle with branching or complex dependency paths.
+
+- Feature Fusion: The model effectively balances x_text (semantic intent) and x_vis_node (what actually happened). The message-passing layers learn the relationship between what should have happened (text) and what actually occurred (visual), isolating the discrepancy as an error signal.
+
+### Technical Architecture
+
+The RecipeVerifier architecture is designed for robust inference on graph structures:
+
+- Graph Representation: The model relies on the GraphSample dataclass, which packs edge_index (the recipe flow), node features (visual/textual), and match similarity scores (x_sim) into a single batchable format.
+
+- Aggregator: We leverage torch_scatter to perform efficient aggregation over the sparse adjacency matrix defined by the DAG.
+
+- Loss Optimization: The module utilizes nn.BCEWithLogitsLoss combined with rigorous checkpointing, early stopping, and weight_decay to prevent the model from overfitting to specific recipe structures.
+
+### Evaluation & Validation
+
+To ensure the model learns generalized concepts of "correctness" rather than memorizing individual recipes, the module supports advanced validation strategies:
+
+- LOO (Leave-One-Out): Evaluates the model's performance on an unseen recording, testing its ability to generalize to new sessions.
+
+- LOGO (Leave-One-Group-Out): A more stringent test that withholds entire recipe types, forcing the model to perform zero-shot verification on completely new culinary procedures.
+
+### Run whitout LOGO
+```
+ python .\substep3_4\gnn.py --graph_pt_dir .\substep3_3\output_3_3 --recordings_json .\captaincook_actionformer_annotations\combined\recordings.json --epochs 30 --lr 3e-4 --dropout 0.2 --output_dir .\substep3_4\output_dir
+```
+
+| Metrics | Value |
+| :--- | :--- |
+| **Accuracy** | 0.5648 |
+| **Precision** | 0.5000 |
+| **Recall** | 0.7234 |
+| **F1-Score** | 0.5913 |
+| **AUC (ROC)** | 0.6044 |
+| **PR-AUC** | 0.5511 |
+
+### Run with LOGO
+
+```
+  python .\substep3_4\gnn.py --graph_pt_dir .\substep3_3\output_3_3 --recordings_json .\captaincook_actionformer_annotations\combined\recordings.json --epochs 5 --lr 3e-4 --dropout 0.2 --output_dir .\substep3_4\output_dir/logo --strategy logo --wandb_run_name logo_1
+
+```
+--- SEARCHING FOR OPTIMAL THRESHOLD ---
+Optimal Threshold: 0.4753
+Improved Macro F1: 0.5003
+Improved Accuracy: 0.5053
+
+Result with optimal threshold
+
+
+| Metrics | Value |
+| :--- | :--- |
+| **Accuracy** | 0.5053 |
+| **Precision** | 0.5014 |
+| **Recall** | 0.5014 |
+| **F1-Score** | 0.5003 |
+| **AUC (ROC)** | 0.4906 |
+
+### Run with LOGO with GroundTruth
+
+```
+  python .\substep3_4\gnn.py --graph_pt_dir .\substep3_3\output_3_3 --recordings_json .\captaincook_actionformer_annotations\combined\recordings.json --epochs 5 --lr 3e-4 --dropout 0.2 --output_dir .\substep3_4\output_dir/logo --strategy logo --wandb_run_name logo_1
+
+```
+--- SEARCHING FOR OPTIMAL THRESHOLD ---
+Optimal Threshold: 0.4951
+Improved Macro F1: 0.5112
+Improved Accuracy: 0.5211
+
+--- GLOBAL PERFORMANCE (OPTIMIZED THRESHOLD) ---
+
+
+
+Result with optimal threshold
+
+
+| Metrics | Value |
+| :--- | :--- |
+| **Accuracy** | 0.512 |
+| **Precision** | 0.5112 |
+| **Recall** | 0.5014 |
+| **F1-Score** | 0.5112 |
+| **AUC (ROC)** | 0.5095 |
+
+CLASS 'Correct' (0) - Precision: 0.5833, Recall: 0.5780
+CLASS 'Error'   (1) - Precision: 0.4390, Recall: 0.4444
+
+
+
+
 
 
 ## Acknowledgements
