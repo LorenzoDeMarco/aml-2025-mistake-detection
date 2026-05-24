@@ -445,7 +445,7 @@ class PtTransformer(nn.Module):
                     print(f"[{i}] labels=None")
                     continue
 
-                # lbl 可能是 Tensor，也可能是 list/np.ndarray
+                # lbl may be a Tensor, list, or np.ndarray
                 if torch.is_tensor(lbl):
                     if lbl.numel() == 0:
                         print(f"[{i}] labels=empty tensor")

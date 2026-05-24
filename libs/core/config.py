@@ -12,24 +12,24 @@ DEFAULTS = {
     "model_name": "LocPointTransformer",
     "dataset": {
         # temporal stride of the feats
-        "feat_stride": 16,
+        "feat_stride": 30,
         # number of frames for each feat
-        "num_frames": 32,
+        "num_frames": 30,
         # default fps, may vary across datasets; Set to none for read from json file
         "default_fps": None,
         # input feat dim
-        "input_dim": 2304,
+        "input_dim": 1024,
         # number of classes
-        "num_classes": 97,
+        "num_classes": 353,
         # downsampling rate of features, 1 to use original resolution
         "downsample_rate": 1,
         # max sequence length during training
         "max_seq_len": 2304,
         # threshold for truncating an action
-        "trunc_thresh": 0.5,
+        "trunc_thresh": 0.3,
         # set to a tuple (e.g., (0.9, 1.0)) to enable random feature cropping
         # might not be implemented by the dataloader
-        "crop_ratio": None,
+        "crop_ratio": [1.0, 1.0],
         # if true, force upsampling of the input features into a fixed size
         # only used for ActivityNet
         "force_upsampling": False,
@@ -153,7 +153,7 @@ def _update_config(config):
     return config
 
 def load_config(config_file, defaults=DEFAULTS):
-    with open(config_file, "r") as fd:
+    with open(config_file,  'r', encoding='utf-8') as fd:
         config = yaml.load(fd, Loader=yaml.FullLoader)
     _merge(defaults, config)
     config = _update_config(config)

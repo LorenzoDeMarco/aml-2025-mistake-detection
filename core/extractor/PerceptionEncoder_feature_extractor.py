@@ -58,14 +58,6 @@ def parse_arguments():
     parser.add_argument("--no_decord", action="store_true", default=False,
                         help="Force disable decord even if installed (debug).")
 
-    # --- PE-AV (heavy, kept for compatibility) ---
-    #parser.add_argument("--peav_model", type=str, default="facebook/pe-av-base-16-frame",
-    #                    help="HF model id for PE-AV (heavy).")
-    #parser.add_argument("--peav_num_frames", type=int, default=16,
-    #                    help="Uniform frames sampled per segment for PE-AV.")
-    #parser.add_argument("--peav_dtype", type=str, default="fp16", choices=["fp16", "fp32", "bf16"],
-    #                    help="Autocast dtype for PE-AV on CUDA (GTX1050: fp16 recommended).")
-
     # --- PE-Core (light, recommended) ---
     parser.add_argument("--pe_core_model_id", type=str, default="hf-hub:timm/PE-Core-B-16",
                             help="OpenCLIP PE-Core model id")
@@ -144,10 +136,7 @@ def _linspace_indices(start: int, end: int, n: int) -> np.ndarray:
 # PE-AV Extractor (kept, heavy)
 # -------------------------
 class PEAVExtractor(torch.nn.Module):
-    """
-    Video-only features via PE-AV.
-    Note: PE-AV is heavy; PE-Core is recommended for GTX1050.
-    """
+
     def __init__(self, model_name: str, device: torch.device, autocast_dtype: str = "fp16"):
         super().__init__()
         try:
@@ -561,17 +550,18 @@ class VideoProcessor:
         if use_decord:
             vr = VideoReader(video_path, ctx=cpu(0), num_threads=1)
             real_fps = float(vr.get_avg_fps()) if hasattr(vr, "get_avg_fps") else 30.0
+            print(f"[decord] Opened video: {video_name} with FPS: {real_fps:.2f}")
             total_frames = len(vr)
             video_duration = total_frames / real_fps
 
             logging.info(f"[decord] video: {video_name} duration={video_duration:.2f}s fps={real_fps:.2f} frames={total_frames}")
-
+            #Each segment is fixed at 1 second.
             decode_frames = _frames_needed_for_backbone(self.method, self.args)
             seg_len_frames = max(int(round(segment_size_sec * real_fps)), 1)
             num_segments = int(np.ceil(total_frames / seg_len_frames))
 
             video_features = []
-            timestamps = []          # 初始化时间戳列表
+            timestamps = []       
 
             for seg_idx in tqdm(range(num_segments), desc=f"Processing video segments for video {video_name}"):
                 start_f = seg_idx * seg_len_frames
@@ -591,8 +581,8 @@ class VideoProcessor:
                     device=self.device
                 )
                 video_features.append(seg_feat)
-
-                # 记录该段的时间戳（秒）
+                
+                # Record the timestamp of this segment (seconds)
                 start_sec = start_f / real_fps
                 end_sec = end_f / real_fps
                 timestamps.append([start_sec, end_sec])
@@ -616,7 +606,7 @@ class VideoProcessor:
         segment_end = max(video_duration - segment_size_sec + 1, 1)
 
         video_features = []
-        timestamps = []          # 初始化时间戳列表
+        timestamps = []         
 
         for start_time in tqdm(np.arange(0, segment_end, segment_size_sec),
                             desc=f"Processing video segments for video {video_name}"):
@@ -635,7 +625,7 @@ class VideoProcessor:
                 device=self.device
             )
             video_features.append(seg_feat)
-            timestamps.append([start_time, end_time])   # 直接使用秒值
+            timestamps.append([start_time, end_time])  
 
         if len(video_features) == 0:
             logging.warning(f"[encodedvideo] No segments extracted for video: {video_name}")

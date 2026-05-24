@@ -33,10 +33,34 @@ class ErrorDataset(Dataset):
 			file_ext,  # feature file extension if any
 			force_upsampling  # force to upsample to max_seq_len
 	):
+		# Initialize file-path related attributes
+		self._init_file_paths(feat_folder, json_file, file_prefix, file_ext)
+		# Initialize split / training mode
+		self._init_split_mode(split, is_training)
+		# Initialize feature metadata
+		self._init_features_meta(feat_stride, num_frames, input_dim, default_fps, downsample_rate, max_seq_len, trunc_thresh, crop_ratio)
+		self.label_dict = None
+		# Load database and select subset
+		self._init_database(json_file, num_classes)
+		# Initialize dataset-specific attributes
+		self._init_db_attributes(num_classes)
+
+	def _init_file_paths(self, feat_folder, json_file, file_prefix, file_ext):
+		"""
+		Initialize file-path related attributes.
+
+		Args:
+			feat_folder (str): Directory containing feature files
+			json_file (str): Path to the annotation JSON file
+			file_prefix (str or None): Prefix for feature filenames
+			file_ext (str or None): Extension for feature filenames
+
+		Sets:
+			self.feat_folder, self.file_prefix (empty string if None),
+			self.file_ext, self.json_file
+		"""
 		# file path
 		assert os.path.exists(feat_folder) and os.path.exists(json_file)
-		assert isinstance(split, tuple) or isinstance(split, list)
-		assert crop_ratio == None or len(crop_ratio) == 2
 		self.feat_folder = feat_folder
 		if file_prefix is not None:
 			self.file_prefix = file_prefix
@@ -44,12 +68,43 @@ class ErrorDataset(Dataset):
 			self.file_prefix = ''
 		self.file_ext = file_ext
 		self.json_file = json_file
-		
+
+	def _init_split_mode(self, split, is_training):
+		"""
+		Initialize split and training-mode attributes.
+
+		Args:
+			split (tuple or list): Dataset split(s); multiple subsets may be concatenated
+			is_training (bool): Whether the dataset is used in training mode
+
+		Sets:
+			self.split, self.is_training
+		"""
 		# split / training mode
+		assert isinstance(split, tuple) or isinstance(split, list)
 		self.split = split
 		self.is_training = is_training
-		
+
+	def _init_features_meta(self, feat_stride, num_frames, input_dim, default_fps, downsample_rate, max_seq_len, trunc_thresh, crop_ratio):
+		"""
+		Initialize feature metadata attributes.
+
+		Args:
+			feat_stride (int): Temporal stride of features
+			num_frames (int): Number of frames per feature vector
+			input_dim (int): Input feature dimension
+			default_fps (float or None): Default frames per second
+			downsample_rate (int): Feature downsampling rate
+			max_seq_len (int): Maximum sequence length during training
+			trunc_thresh (float): Threshold for truncating action segments
+			crop_ratio (tuple or None): Random crop ratio as (start, end)
+
+		Sets:
+			self.feat_stride, self.num_frames, self.input_dim, self.default_fps,
+			self.downsample_rate, self.max_seq_len, self.trunc_thresh, self.crop_ratio
+		"""
 		# features meta info
+		assert crop_ratio == None or len(crop_ratio) == 2
 		self.feat_stride = feat_stride
 		self.num_frames = num_frames
 		self.input_dim = input_dim
@@ -57,19 +112,20 @@ class ErrorDataset(Dataset):
 		self.downsample_rate = downsample_rate
 		self.max_seq_len = max_seq_len
 		self.trunc_thresh = trunc_thresh
-		self.num_classes = num_classes
-		self.label_dict = None
 		self.crop_ratio = crop_ratio
-		
+
+	def _init_database(self, json_file, num_classes):
 		# load database and select the subset
-		dict_db, label_dict = self._load_json_db(self.json_file)
+		dict_db, label_dict = self._load_json_db(json_file)
 		# "empty" noun categories on epic-kitchens
 		assert len(label_dict) <= num_classes
 		self.data_list = dict_db
 		self.label_dict = label_dict
-		
+
+	def _init_db_attributes(self, num_classes):
+
 		# dataset specific attributes
-		empty_label_ids = self.find_empty_cls(label_dict, num_classes)
+		empty_label_ids = self.find_empty_cls(self.label_dict, num_classes)
 		self.db_attributes = {
 			'dataset_name': 'error',
 			'tiou_thresholds': np.linspace(0.1, 0.5, 5),
@@ -102,11 +158,24 @@ class ErrorDataset(Dataset):
 			for key, value in json_db.items():
 				for act in value['annotations']:
 					label_dict[act['label']] = act['label_id']
+		else:
+			label_dict = self.label_dict
 		# fill in the db (immutable afterwards)
 		dict_db = tuple()
+		skipped_missing_feat = []
+		file_ext = self.file_ext or ".npz"
+		file_prefix = self.file_prefix or ""
 		for key, value in json_db.items():
 			# skip the video if not in the split
 			if value['subset'].lower() not in self.split:
+				continue
+
+			try:
+				find_segment_npz_in_directory(
+					self.feat_folder, key, file_prefix, file_ext
+				)
+			except FileNotFoundError:
+				skipped_missing_feat.append(key)
 				continue
 			
 			# get fps if available
@@ -141,6 +210,18 @@ class ErrorDataset(Dataset):
 			             'segments': segments,
 			             'labels': labels
 			             },)
+		if skipped_missing_feat:
+			examples = ", ".join(skipped_missing_feat[:5])
+			suffix = " ..." if len(skipped_missing_feat) > 5 else ""
+			print(
+				f"[ErrorDataset] Skipped {len(skipped_missing_feat)} videos with no "
+				f"matching feature under {self.feat_folder} (e.g. {examples}{suffix})"
+			)
+		if len(dict_db) == 0:
+			raise RuntimeError(
+				f"No videos left after split/filter under {self.feat_folder}. "
+				f"Check json_file, train/val split names, and feature files."
+			)
 		return dict_db, label_dict
 	
 	def __len__(self):

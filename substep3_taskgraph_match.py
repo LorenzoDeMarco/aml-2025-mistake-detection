@@ -20,18 +20,12 @@ except Exception:
 # Helpers: mapping recipe_id -> task_graph json
 # -----------------------------
 def slugify_recipe_name(name: str) -> str:
-    """'Microwave Egg Sandwich' -> 'microwaveeggsandwich'."""
     s = name.lower()
     s = re.sub(r"[^a-z0-9]+", "", s)
     return s
 
 
 def load_recipeid_to_graphpath(avg_csv: Path, task_graph_dir: Path) -> Dict[str, Path]:
-    """
-    avg_csv rows like:
-      4,Ramen,39.6939...
-    returns recipe_id(str)-> task_graph_path
-    """
     mapping = {}
     with avg_csv.open("r", encoding="utf-8", newline="") as f:
         reader = csv.reader(f)
@@ -57,7 +51,6 @@ def load_recipeid_to_graphpath(avg_csv: Path, task_graph_dir: Path) -> Dict[str,
 
 
 def recipe_id_from_video_id(video_id: str) -> str:
-    """video_id like '1_7' -> '1'"""
     return video_id.split("_")[0]
 
 
@@ -69,8 +62,8 @@ def load_substep1_npz(npz_path: Path) -> Dict[str, Any]:
     if "embeddings" not in d.files or "segments" not in d.files:
         raise ValueError(f"{npz_path} missing embeddings/segments, keys={d.files}")
 
-    step_emb = np.asarray(d["embeddings"], dtype=np.float32)  # (S,D)
-    segments = np.asarray(d["segments"], dtype=np.float32)    # (S,2)
+    step_emb = np.asarray(d["embeddings"], dtype=np.float32)
+    segments = np.asarray(d["segments"], dtype=np.float32)
 
     if "video_id" in d.files:
         vid = str(d["video_id"]).strip()
@@ -84,21 +77,9 @@ def load_substep1_npz(npz_path: Path) -> Dict[str, Any]:
 
 
 # -----------------------------
-# Load task graph json (ONLY your format: steps+edges)
+# Load task graph json (only steps+edges format)
 # -----------------------------
 def load_task_graph_steps_edges(graph_json: Path) -> Dict[str, Any]:
-    """
-    ONLY supports:
-      {
-        "steps": {"0": "START", "1": "...", ...},
-        "edges": [[0, 1], [1, 2], ...]
-      }
-
-    Returns:
-      node_texts: List[str] ordered by ascending original node_id
-      node_ids:   List[int] original node ids in the same order
-      edge_index: LongTensor (2,E) using re-indexed node indices [0..V-1]
-    """
     with graph_json.open("r", encoding="utf-8") as f:
         g = json.load(f)
 
@@ -112,7 +93,6 @@ def load_task_graph_steps_edges(graph_json: Path) -> Dict[str, Any]:
     if len(node_ids) == 0:
         raise ValueError(f"Empty steps in {graph_json}")
 
-    # robust: steps_dict keys are strings in your files
     node_texts = [str(steps_dict[str(nid)]) for nid in node_ids]
     id_to_idx = {nid: i for i, nid in enumerate(node_ids)}
 
@@ -128,19 +108,18 @@ def load_task_graph_steps_edges(graph_json: Path) -> Dict[str, Any]:
     if len(e_pairs) == 0:
         edge_index = torch.empty((2, 0), dtype=torch.long)
     else:
-        edge_index = torch.tensor(e_pairs, dtype=torch.long).t().contiguous()  # (2,E)
+        edge_index = torch.tensor(e_pairs, dtype=torch.long).t().contiguous()
 
     return {"node_texts": node_texts, "node_ids": node_ids, "edge_index": edge_index}
 
 
 # -----------------------------
-# PE-Core text encoder (open_clip)
+# PE-Core text encoder
 # -----------------------------
 @torch.no_grad()
 def encode_text_pe_core(
     model, tokenizer, texts: List[str], device: torch.device, batch_size: int = 64, normalize: bool = True
 ) -> torch.Tensor:
-    """Returns (V,D) float32 on CPU."""
     model = model.to(device).eval()
     outs = []
     for i in range(0, len(texts), batch_size):
@@ -158,21 +137,16 @@ def l2norm(x: torch.Tensor) -> torch.Tensor:
 
 
 # -----------------------------
-# Hungarian matching
+# Hungarian matching with temporal order penalty
 # -----------------------------
 def hungarian_one_to_one(
-    node_emb: torch.Tensor,  # (V,D)
-    step_emb: torch.Tensor,  # (S,D)
+    node_emb: torch.Tensor,
+    step_emb: torch.Tensor,
+    node_order: Optional[torch.Tensor] = None,
+    step_order: Optional[torch.Tensor] = None,
+    order_lambda: float = 0.1,
     sim_threshold: float = -1.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Returns:
-      node_to_step: (V,) matched step idx or -1
-      step_to_node: (S,) matched node idx or -1
-
-    We maximize cosine similarity => minimize cost = 1 - sim.
-    We do rectangular assignment and then drop matches below sim_threshold (if threshold > -1).
-    """
     if not HAS_SCIPY:
         raise RuntimeError("scipy is required for Hungarian matching. Install: pip install scipy")
 
@@ -180,6 +154,13 @@ def hungarian_one_to_one(
     s = l2norm(step_emb)
     sim = (n @ s.t()).detach().cpu().numpy()  # (V,S)
     cost = 1.0 - sim
+
+    # add order penalty
+    if node_order is not None and step_order is not None:
+        node_order_np = node_order.cpu().numpy()[:, None]
+        step_order_np = step_order.cpu().numpy()[None, :]
+        order_penalty = order_lambda * np.abs(node_order_np - step_order_np)
+        cost += order_penalty
 
     r_ind, c_ind = linear_sum_assignment(cost)
 
@@ -197,28 +178,51 @@ def hungarian_one_to_one(
 
 
 # -----------------------------
+# Topological order of DAG (using networkx)
+# -----------------------------
+def get_topological_order(edge_index: torch.Tensor, num_nodes: int) -> torch.Tensor:
+    """
+    Return node order indices (0..V-1) according to topological sort.
+    If graph has cycles or networkx not available, return identity order.
+    """
+    if edge_index.numel() == 0 or num_nodes == 0:
+        return torch.arange(num_nodes)
+
+    try:
+        import networkx as nx
+        G = nx.DiGraph()
+        G.add_nodes_from(range(num_nodes))
+        edges = edge_index.t().tolist()
+        for u, v in edges:
+            G.add_edge(u, v)
+        # Topological sort (raises exception if cycle)
+        topo = list(nx.topological_sort(G))
+        # map node index to position
+        order = torch.zeros(num_nodes, dtype=torch.long)
+        for pos, node in enumerate(topo):
+            order[node] = pos
+        return order
+    except Exception as e:
+        print(f"Warning: topological sort failed: {e}. Using identity order.")
+        return torch.arange(num_nodes)
+
+
+# -----------------------------
 # Main
 # -----------------------------
 def main():
     ap = argparse.ArgumentParser()
-
-    ap.add_argument("--substep1_dir", required=True, help="Directory with Substep1 .npz (step embeddings)")
-    ap.add_argument("--task_graph_dir", required=True, help="Directory task_graphs/*.json")
-    ap.add_argument("--avg_csv", required=True, help="average_segment_length.csv (recipe_id -> recipe name)")
-    ap.add_argument("--out_dir", required=True, help="Output directory (per-video .pt)")
-
+    ap.add_argument("--substep1_dir", required=True)
+    ap.add_argument("--task_graph_dir", required=True)
+    ap.add_argument("--avg_csv", required=True)
+    ap.add_argument("--out_dir", required=True)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-
-    # PE-Core model id
     ap.add_argument("--pe_core_model_id", default="hf-hub:timm/PE-Core-B-16")
     ap.add_argument("--text_batch_size", type=int, default=64)
-    ap.add_argument("--normalize", action="store_true", help="L2 normalize embeddings for matching")
-
-    # matching
-    ap.add_argument("--sim_threshold", type=float, default=-1.0,
-                    help="Drop matches with cosine sim < threshold. Use -1 to keep all assigned pairs.")
-    ap.add_argument("--topk_steps", type=int, default=0, help="Optional truncate step sequence (0 keep all)")
-
+    ap.add_argument("--normalize", action="store_true")
+    ap.add_argument("--sim_threshold", type=float, default=-1.0)
+    ap.add_argument("--topk_steps", type=int, default=0)
+    ap.add_argument("--order_lambda", type=float, default=0.1, help="Penalty for order mismatch")
     args = ap.parse_args()
 
     substep1_dir = Path(args.substep1_dir)
@@ -229,16 +233,12 @@ def main():
 
     device = torch.device(args.device)
 
-    # mapping recipe_id -> graph path
     rid2graph = load_recipeid_to_graphpath(avg_csv, task_graph_dir)
 
-    # PE-Core encoder
     import open_clip
     model, _, _ = open_clip.create_model_and_transforms(args.pe_core_model_id)
     tokenizer = open_clip.get_tokenizer(args.pe_core_model_id)
 
-    # in-memory recipe cache (fast, no disk write)
-    # recipe_id -> {"node_texts","node_ids","edge_index","node_text_emb"}
     recipe_cache: Dict[str, Dict[str, Any]] = {}
 
     saved = 0
@@ -262,7 +262,6 @@ def main():
             skipped_missing_graph += 1
             continue
 
-        # --- recipe cache: load/encode once per recipe
         if recipe_id not in recipe_cache:
             graph_path = rid2graph[recipe_id]
             try:
@@ -279,7 +278,7 @@ def main():
             node_text_emb = encode_text_pe_core(
                 model, tokenizer, node_texts, device=device,
                 batch_size=args.text_batch_size, normalize=args.normalize
-            )  # (V,Dt) CPU
+            )
 
             recipe_cache[recipe_id] = {
                 "graph_file": str(graph_path),
@@ -295,15 +294,24 @@ def main():
         node_texts = rc["node_texts"]
         node_ids = rc["node_ids"]
 
-        # --- video visual steps
-        step_x = torch.from_numpy(step_emb_np).float()          # (S,Dv)
-        segments = torch.from_numpy(segments_np).float()        # (S,2)
+        step_x = torch.from_numpy(step_emb_np).float()
+        segments = torch.from_numpy(segments_np).float()
 
         if args.topk_steps and step_x.size(0) > args.topk_steps:
             step_x = step_x[:args.topk_steps]
             segments = segments[:args.topk_steps]
 
-        # --- matching (per-video)
+        # ---- compute orders ----
+        # node order: topological sort of DAG
+        node_order = get_topological_order(edge_index, node_text_emb.size(0))
+        # step order: by start time (assuming segments are start/end)
+        step_order = torch.argsort(segments[:, 0])   # sorted indices
+        # but for penalty we need the position value, so we map sorted index
+        step_order_pos = torch.zeros_like(step_order)
+        for pos, idx in enumerate(step_order):
+            step_order_pos[idx] = pos
+        step_order = step_order_pos
+
         node_emb_dev = node_text_emb.to(device)
         step_emb_dev = step_x.to(device)
         if args.normalize:
@@ -313,6 +321,9 @@ def main():
         try:
             node_to_step, step_to_node = hungarian_one_to_one(
                 node_emb_dev, step_emb_dev,
+                node_order=node_order.to(device),
+                step_order=step_order.to(device),
+                order_lambda=args.order_lambda,
                 sim_threshold=args.sim_threshold
             )
         except Exception as e:
@@ -323,28 +334,18 @@ def main():
         node_to_step = node_to_step.cpu()
         step_to_node = step_to_node.cpu()
 
-        # -----------------------------
-        # Per-video graph package output
-        # -----------------------------
         pack = {
-            # meta
             "video_id": video_id,
             "recipe_id": recipe_id,
             "graph_file": rc["graph_file"],
-
-            # graph structure
-            "edge_index": edge_index,      # (2,E), node index in [0..V-1]
-            "node_ids": node_ids,          # original node ids aligned with x_text
-            "node_texts": node_texts,      # text aligned with x_text
-
-            # node & step features
-            "x_text": node_text_emb,       # (V,Dt)  node text embeddings
-            "step_x": step_x,              # (S,Dv)  visual step embeddings
-            "segments": segments,          # (S,2)   start/end times
-
-            # matching
-            "node_to_step": node_to_step,  # (V,) matched step idx or -1
-            "step_to_node": step_to_node,  # (S,) matched node idx or -1
+            "edge_index": edge_index,
+            "node_ids": node_ids,
+            "node_texts": node_texts,
+            "x_text": node_text_emb,
+            "step_x": step_x,
+            "segments": segments,
+            "node_to_step": node_to_step,
+            "step_to_node": step_to_node,
         }
 
         torch.save(pack, out_dir / f"{video_id}.pt")
@@ -356,8 +357,6 @@ def main():
     print("saved:", saved)
     print("skipped_missing_graph:", skipped_missing_graph)
     print("skipped_bad:", skipped_bad)
-    if not HAS_SCIPY:
-        print("WARNING: scipy not installed -> Hungarian matching will fail. Install: pip install scipy")
 
 
 if __name__ == "__main__":

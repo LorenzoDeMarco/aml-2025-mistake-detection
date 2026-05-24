@@ -1,0 +1,58 @@
+dataset_name: error
+train_split: ['training','test']
+val_split: ['training','test','validation']
+dataset: {
+  #Key1 features 
+  feat_folder: ./data/features/perception_encoder_bak,
+  # key2 annotations
+  json_file: ./data/substep1_1_actionformer_annotations/combined/recordings.json,
+  file_ext: .npz,
+  # key3 the number of step classess
+  num_classes: 353,
+  # key4 the dimension of input features
+  input_dim: 1024,
+  #key5 the number of frames between two features
+  # this should to support: feat_stride/default_fps=1s
+  feat_stride: 30,    
+  # key6 the number of frames for each feature  
+  # this should to support: num_frames/default_fps=1s        
+  num_frames: 30,    
+  # key7 the default fps of the video
+  default_fps: 29.97,
+  trunc_thresh: 0.3,
+  # key8 the ratio for random cropping of features during training, set to None to disable it.
+  crop_ratio: [1.0, 1.0],
+  # key9 if true, force upsampling of the input features into a fixed size, only used for ActivityNet
+  max_seq_len: 2304,
+  file_prefix: ~,
+}
+model: {
+  regression_range: [[0, 4], [2, 8], [4, 16], [8, 32], [16, 64], [32, 10000]],
+  fpn_type: identity,
+  max_buffer_len_factor: 6.0,
+  n_mha_win_size: 9,
+}
+opt: {
+  learning_rate: 0.0001,
+  epochs: 10,
+  weight_decay: 0.05,
+}
+loader: {
+  batch_size: 2,
+  num_workers: 4,
+}
+train_cfg: {
+  init_loss_norm: 250,
+  clip_grad_l2norm: 1.0,
+  cls_prior_prob: 0.01,
+  center_sample: radius,
+  center_sample_radius: 1.5,
+}
+test_cfg: {
+  pre_nms_topk: 5000,
+  max_seg_num: 2000,
+  min_score: 0.001,
+  nms_sigma: 0.4,
+  multiclass_nms: True
+}
+substep1_2_output_folder: ./data/substep1_2_train_checkpoint/

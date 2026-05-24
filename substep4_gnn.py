@@ -2,13 +2,16 @@ import argparse
 import json
 import os
 import random
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from sklearn.model_selection import KFold
 
 
 # -------------------------
@@ -40,28 +43,25 @@ def find_first_key(d: Dict[str, Any], keys: List[str]) -> Optional[str]:
     return None
 
 
+def format_metrics(metrics: Dict[str, float]) -> str:
+    keys = ["accuracy", "precision", "recall", "f1", "auc", "pr_auc"]
+    parts = [f"{k}={metrics[k]:.4f}" for k in keys if k in metrics]
+    return ", ".join(parts)
+
+
 # -------------------------
 # Recordings parsing (CaptainCook4D recordings-combined.json)
 # -------------------------
-def load_recordings_combined(recordings_json: Path, label_rule: str = "any_step_error") -> Tuple[Dict[str, int], Dict[str, List[str]]]:
-    """
-    recordings-combined.json structure:
-      {
-        "version": "...",
-        "database": {
-            "1_19": {"subset":"Training","annotations":[{"has_error":...}, ...], ...},
-            ...
-        }
-      }
-    """
+def load_recordings_combined(
+    recordings_json: Path,
+    label_rule: str = "any_step_error",
+) -> Tuple[Dict[str, int], Dict[str, List[str]]]:
     with recordings_json.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
-    #  real videos are in data["database"]
     if isinstance(data, dict) and "database" in data and isinstance(data["database"], dict):
         db = data["database"]
     elif isinstance(data, dict):
-        # fallback: assume whole dict is db
         db = data
     else:
         raise ValueError(f"Expected dict in {recordings_json}, got {type(data)}")
@@ -82,13 +82,10 @@ def load_recordings_combined(recordings_json: Path, label_rule: str = "any_step_
     for vid, item in db.items():
         if not isinstance(item, dict):
             continue
-
-        # split（ Training/Validation/Test）
         subset = norm_subset(item.get("subset", ""))
         if subset is not None:
             split[subset].append(str(vid))
 
-        # label： default use "any step has_error==True => error(0) else correct(1)"
         anns = item.get("annotations", [])
         any_step_error = False
         if isinstance(anns, list):
@@ -104,7 +101,6 @@ def load_recordings_combined(recordings_json: Path, label_rule: str = "any_step_
         else:
             raise ValueError(f"Unknown label_rule={label_rule}")
 
-    # keep deterministic order
     for k in split:
         split[k] = sorted(split[k])
 
@@ -114,6 +110,22 @@ def load_recordings_combined(recordings_json: Path, label_rule: str = "any_step_
     return labels, split
 
 
+def intersect_split_with_available(
+    split: Dict[str, List[str]],
+    labels: Dict[str, int],
+    pt_dir: Path,
+) -> Tuple[Dict[str, List[str]], List[str]]:
+    pt_vids = {p.stem for p in pt_dir.glob("*.pt")}
+    labeled_vids = set(labels.keys())
+    available = pt_vids & labeled_vids
+
+    split_vids: Dict[str, List[str]] = {}
+    for subset in ("train", "val", "test"):
+        split_vids[subset] = sorted(vid for vid in split.get(subset, []) if vid in available)
+
+    usable = sorted(available)
+    return split_vids, usable
+
 
 # -------------------------
 # Dataset: load per-video graph packages from Substep3
@@ -121,36 +133,24 @@ def load_recordings_combined(recordings_json: Path, label_rule: str = "any_step_
 @dataclass
 class GraphSample:
     video_id: str
-    edge_index: torch.Tensor      # (2,E) long
-    x_text: torch.Tensor          # (V,Dt) float
-    x_vis_node: torch.Tensor      # (V,Dv) float (aligned step feature per node; 0 if unmatched)
-    y: int                        # 0/1
+    edge_index: torch.Tensor
+    x_text: torch.Tensor
+    x_vis_node: torch.Tensor
+    y: int
 
 
 class GraphPTDataset(torch.utils.data.Dataset):
-    """
-    Reads Substep3 output .pt:
-      required keys:
-        - edge_index
-        - x_text OR node_text_emb
-        - step_x OR step_emb
-        - node_to_step
-      label from labels dict
-    """
-    def __init__(
-        self,
-        pt_dir: Path,
-        video_ids: List[str],
-        labels: Dict[str, int],
-    ):
+    def __init__(self, pt_dir: Path, video_ids: List[str], labels: Dict[str, int]):
         self.pt_dir = pt_dir
         self.video_ids = video_ids
         self.labels = labels
 
+        if not video_ids:
+            raise ValueError("GraphPTDataset received an empty video id list")
+
         missing = [vid for vid in video_ids if (pt_dir / f"{vid}.pt").exists() is False]
         if missing:
             raise FileNotFoundError(f"Missing {len(missing)} pt files in {pt_dir}, e.g. {missing[:5]}")
-
         unlabeled = [vid for vid in video_ids if vid not in labels]
         if unlabeled:
             raise KeyError(f"Missing labels for {len(unlabeled)} videos, e.g. {unlabeled[:5]}")
@@ -163,7 +163,6 @@ class GraphPTDataset(torch.utils.data.Dataset):
         pack = torch.load(self.pt_dir / f"{vid}.pt", map_location="cpu")
 
         edge_index = pack["edge_index"].long()
-
         k_text = find_first_key(pack, ["x_text", "node_text_emb"])
         if k_text is None:
             raise KeyError(f"{vid}.pt missing x_text/node_text_emb")
@@ -178,10 +177,9 @@ class GraphPTDataset(torch.utils.data.Dataset):
             raise KeyError(f"{vid}.pt missing node_to_step")
         node_to_step = pack["node_to_step"].long()
 
-        V = x_text.size(0)
-        Dv = step_x.size(1)
-
-        x_vis_node = torch.zeros((V, Dv), dtype=torch.float32)
+        v = x_text.size(0)
+        dv = step_x.size(1)
+        x_vis_node = torch.zeros((v, dv), dtype=torch.float32)
         matched = node_to_step >= 0
         if matched.any():
             node_idx = torch.nonzero(matched, as_tuple=False).squeeze(-1)
@@ -195,9 +193,8 @@ class GraphPTDataset(torch.utils.data.Dataset):
 def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
     x_texts, x_viss, edge_indices, batch_vecs, ys = [], [], [], [], []
     node_offset = 0
-
     for gi, s in enumerate(batch):
-        V = s.x_text.size(0)
+        v = s.x_text.size(0)
         x_texts.append(s.x_text)
         x_viss.append(s.x_vis_node)
         ys.append(s.y)
@@ -207,12 +204,12 @@ def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
             ei = ei + node_offset
         edge_indices.append(ei)
 
-        batch_vecs.append(torch.full((V,), gi, dtype=torch.long))
-        node_offset += V
+        batch_vecs.append(torch.full((v,), gi, dtype=torch.long))
+        node_offset += v
 
     x_text = torch.cat(x_texts, dim=0)
     x_vis = torch.cat(x_viss, dim=0)
-    edge_index = torch.cat(edge_indices, dim=1) if len(edge_indices) else torch.empty((2, 0), dtype=torch.long)
+    edge_index = torch.cat(edge_indices, dim=1) if edge_indices else torch.empty((2, 0), dtype=torch.long)
     batch_vec = torch.cat(batch_vecs, dim=0)
     y = torch.tensor(ys, dtype=torch.float32)
 
@@ -220,13 +217,9 @@ def collate_graph_samples(batch: List[GraphSample]) -> Dict[str, torch.Tensor]:
 
 
 # -------------------------
-# Model
+# GNN layers
 # -------------------------
 class NodeFusion(nn.Module):
-    """
-    h0 = LN( Wt(x_text) + Wv(x_vis_node) )
-    x_vis_node is zero for unmatched nodes => OK.
-    """
     def __init__(self, dim_text: int, dim_vis: int, hidden_dim: int, dropout: float = 0.1):
         super().__init__()
         self.text_proj = nn.Linear(dim_text, hidden_dim)
@@ -237,16 +230,10 @@ class NodeFusion(nn.Module):
     def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor) -> torch.Tensor:
         ht = self.drop(self.text_proj(x_text))
         hv = self.drop(self.vis_proj(x_vis))
-        h = ht + hv
-        return self.ln(h)
+        return self.ln(ht + hv)
 
 
 class DiGraphConv(nn.Module):
-    """
-    Simple directed message passing:
-      agg_v = sum/mean_{(u->v)} W_msg x_u
-      x'_v = act( W_self x_v + agg_v )
-    """
     def __init__(self, dim: int, dropout: float = 0.1, aggr: str = "mean"):
         super().__init__()
         assert aggr in {"sum", "mean"}
@@ -256,10 +243,10 @@ class DiGraphConv(nn.Module):
         self.ln = nn.LayerNorm(dim)
         self.drop = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        del batch
         if edge_index.numel() == 0:
-            out = self.self_lin(x)
-            out = F.relu(out)
+            out = F.relu(self.self_lin(x))
             return self.ln(self.drop(out))
 
         src, dst = edge_index[0], edge_index[1]
@@ -273,10 +260,92 @@ class DiGraphConv(nn.Module):
             deg.index_add_(0, dst, torch.ones_like(dst, dtype=x.dtype))
             agg = agg / deg.clamp(min=1.0).unsqueeze(-1)
 
-        out = self.self_lin(x) + agg
-        out = F.relu(out)
-        out = self.ln(out)
-        return self.drop(out)
+        out = F.relu(self.self_lin(x) + agg)
+        return self.ln(self.drop(out))
+
+
+def topological_order_from_edges(num_nodes: int, edge_index: torch.Tensor) -> List[int]:
+    """Kahn topological sort for one graph. Falls back to identity order on cycles."""
+    if num_nodes == 0:
+        return []
+    if edge_index.numel() == 0:
+        return list(range(num_nodes))
+
+    indeg = [0] * num_nodes
+    adj: List[List[int]] = [[] for _ in range(num_nodes)]
+    edges = edge_index.t().tolist()
+    for src, dst in edges:
+        if 0 <= src < num_nodes and 0 <= dst < num_nodes and src != dst:
+            adj[src].append(dst)
+            indeg[dst] += 1
+
+    queue = deque(i for i in range(num_nodes) if indeg[i] == 0)
+    order: List[int] = []
+    while queue:
+        node = queue.popleft()
+        order.append(node)
+        for nxt in adj[node]:
+            indeg[nxt] -= 1
+            if indeg[nxt] == 0:
+                queue.append(nxt)
+
+    if len(order) != num_nodes:
+        return list(range(num_nodes))
+    return order
+
+
+class DAGNNConv(nn.Module):
+    """
+    Lightweight DAGNN-style layer: propagate only from predecessors in topological order.
+    Designed for CaptainCook task graphs (directed acyclic graphs).
+    """
+
+    def __init__(self, dim: int, dropout: float = 0.1):
+        super().__init__()
+        self.self_lin = nn.Linear(dim, dim, bias=True)
+        self.pred_lin = nn.Linear(dim, dim, bias=False)
+        self.ln = nn.LayerNorm(dim)
+        self.drop = nn.Dropout(dropout)
+
+    def _forward_single_graph(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+        num_nodes = x.size(0)
+        order = topological_order_from_edges(num_nodes, edge_index.cpu())
+
+        preds: List[List[int]] = [[] for _ in range(num_nodes)]
+        if edge_index.numel() > 0:
+            for src, dst in edge_index.t().tolist():
+                if 0 <= src < num_nodes and 0 <= dst < num_nodes:
+                    preds[dst].append(src)
+
+        h = torch.zeros_like(x)
+        for node in order:
+            if preds[node]:
+                parent_h = torch.stack([h[p] for p in preds[node]], dim=0).mean(dim=0)
+                h[node] = F.relu(self.self_lin(x[node]) + self.pred_lin(parent_h))
+            else:
+                h[node] = F.relu(self.self_lin(x[node]))
+        return self.ln(self.drop(h))
+
+    def forward(self, x: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+        if batch.numel() == 0:
+            return self._forward_single_graph(x, edge_index)
+
+        num_graphs = int(batch.max().item()) + 1
+        outputs = []
+        for graph_id in range(num_graphs):
+            node_mask = batch == graph_id
+            node_ids = torch.nonzero(node_mask, as_tuple=False).squeeze(-1)
+            x_g = x[node_ids]
+            if edge_index.numel() == 0:
+                ei_g = edge_index
+            else:
+                edge_mask = (batch[edge_index[0]] == graph_id) & (batch[edge_index[1]] == graph_id)
+                ei_g = edge_index[:, edge_mask]
+                local_map = torch.full((x.size(0),), -1, dtype=torch.long, device=x.device)
+                local_map[node_ids] = torch.arange(node_ids.numel(), device=x.device)
+                ei_g = local_map[ei_g]
+            outputs.append(self._forward_single_graph(x_g, ei_g))
+        return torch.cat(outputs, dim=0)
 
 
 def global_mean_pool(x: torch.Tensor, batch: torch.Tensor, num_graphs: int) -> torch.Tensor:
@@ -297,10 +366,19 @@ class GraphClassifier(nn.Module):
         num_layers: int = 3,
         dropout: float = 0.2,
         aggr: str = "mean",
+        gnn_layer: str = "dagnn",
     ):
         super().__init__()
+        assert gnn_layer in {"dagnn", "digraph"}
+        self.gnn_layer = gnn_layer
         self.fusion = NodeFusion(dim_text, dim_vis, hidden_dim, dropout=dropout)
-        self.layers = nn.ModuleList([DiGraphConv(hidden_dim, dropout=dropout, aggr=aggr) for _ in range(num_layers)])
+
+        if gnn_layer == "dagnn":
+            self.layers = nn.ModuleList([DAGNNConv(hidden_dim, dropout=dropout) for _ in range(num_layers)])
+        else:
+            self.layers = nn.ModuleList([
+                DiGraphConv(hidden_dim, dropout=dropout, aggr=aggr) for _ in range(num_layers)
+            ])
 
         self.head = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
@@ -309,24 +387,31 @@ class GraphClassifier(nn.Module):
             nn.Linear(hidden_dim, 1),
         )
 
-    def forward(self, x_text: torch.Tensor, x_vis: torch.Tensor, edge_index: torch.Tensor, batch: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self,
+        x_text: torch.Tensor,
+        x_vis: torch.Tensor,
+        edge_index: torch.Tensor,
+        batch: torch.Tensor,
+    ) -> torch.Tensor:
         h = self.fusion(x_text, x_vis)
         for layer in self.layers:
-            h = h + layer(h, edge_index)  # residual
+            if self.gnn_layer == "dagnn":
+                h = h + layer(h, edge_index, batch)
+            else:
+                h = h + layer(h, edge_index, batch)
         num_graphs = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
         g = global_mean_pool(h, batch, num_graphs)
-        logits = self.head(g).squeeze(-1)
-        return logits
+        return self.head(g).squeeze(-1)
 
 
 # -------------------------
-# Train / Eval
+# Train / Eval functions
 # -------------------------
 @torch.no_grad()
 def eval_epoch(model: nn.Module, loader, device: torch.device) -> Dict[str, float]:
     model.eval()
     all_logits, all_y = [], []
-
     for batch in loader:
         x_text = batch["x_text"].to(device)
         x_vis = batch["x_vis"].to(device)
@@ -340,7 +425,6 @@ def eval_epoch(model: nn.Module, loader, device: torch.device) -> Dict[str, floa
 
     logits = torch.cat(all_logits, dim=0)
     y = torch.cat(all_y, dim=0)
-
     prob = sigmoid(logits)
     pred = (prob >= 0.5).long()
     y_int = y.long()
@@ -364,15 +448,25 @@ def eval_epoch(model: nn.Module, loader, device: torch.device) -> Dict[str, floa
             pr_auc = float(average_precision_score(y.numpy(), prob.numpy()))
         except Exception:
             pass
-
-    return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "auc": auc, "pr_auc": pr_auc}
+    return {
+        "accuracy": acc,
+        "precision": prec,
+        "recall": rec,
+        "f1": f1,
+        "auc": auc,
+        "pr_auc": pr_auc,
+        "num_samples": int(y.numel()),
+        "tp": tp,
+        "tn": tn,
+        "fp": fp,
+        "fn": fn,
+    }
 
 
 def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, grad_clip: float) -> float:
     model.train()
     total_loss = 0.0
     total_n = 0
-
     for batch in loader:
         x_text = batch["x_text"].to(device)
         x_vis = batch["x_vis"].to(device)
@@ -392,115 +486,78 @@ def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, g
         bs = y.size(0)
         total_loss += float(loss.item()) * bs
         total_n += bs
-
     return total_loss / max(1, total_n)
 
 
-# -------------------------
-# Main
-# -------------------------
-def main():
-    ap = argparse.ArgumentParser()
-
-    ap.add_argument("--graph_pt_dir", required=True, help="Substep3 output dir (each video_id.pt)")
-    ap.add_argument("--recordings_json", required=True, help="CaptainCook4D recordings-combined.json")
-    ap.add_argument("--label_rule", choices=["any_step_error", "video_has_error"], default="any_step_error",
-                    help="How to build video-level label: default uses annotations[*].has_error.")
-
-    ap.add_argument("--output_dir", required=True, help="Save checkpoints/logs here")
-    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
-
-    # if subset missing, fallback random split
-    ap.add_argument("--train_ratio", type=float, default=0.8)
-    ap.add_argument("--val_ratio", type=float, default=0.1)
-    ap.add_argument("--seed", type=int, default=123)
-
-    # training
-    ap.add_argument("--epochs", type=int, default=30)
-    ap.add_argument("--batch_size", type=int, default=16)
-    ap.add_argument("--lr", type=float, default=3e-4)
-    ap.add_argument("--weight_decay", type=float, default=1e-4)
-    ap.add_argument("--grad_clip", type=float, default=1.0)
-
-    # model
-    ap.add_argument("--hidden_dim", type=int, default=256)
-    ap.add_argument("--num_layers", type=int, default=3)
-    ap.add_argument("--dropout", type=float, default=0.2)
-    ap.add_argument("--aggr", choices=["sum", "mean"], default="mean")
-
-    ap.add_argument("--num_workers", type=int, default=0)
-    ap.add_argument("--eval_only", action="store_true")
-    ap.add_argument("--resume", default="", help="Path to checkpoint .pt")
-
-    args = ap.parse_args()
-
-    set_seed(args.seed)
-
-    pt_dir = Path(args.graph_pt_dir)
-    labels, split = load_recordings_combined(Path(args.recordings_json), label_rule=args.label_rule)
-
-    # only keep vids that have .pt and label
-    pt_vids = set(p.stem for p in pt_dir.glob("*.pt"))
-    labeled_vids = set(labels.keys())
-    usable = sorted(list(pt_vids & labeled_vids))
-    if not usable:
-        raise RuntimeError(f"No usable samples: check {pt_dir} and recordings_json labels")
-
-    # build split from subset (preferred)
-    train_vids = [v for v in split.get("train", []) if v in usable]
-    val_vids = [v for v in split.get("val", []) if v in usable]
-    test_vids = [v for v in split.get("test", []) if v in usable]
-
-    # fallback: random split if subset split is empty
-    if not train_vids and not val_vids and not test_vids:
-        all_vids = usable[:]
-        random.shuffle(all_vids)
-        n = len(all_vids)
-        n_train = int(n * args.train_ratio)
-        n_val = int(n * args.val_ratio)
-        train_vids = all_vids[:n_train]
-        val_vids = all_vids[n_train:n_train + n_val]
-        test_vids = all_vids[n_train + n_val:]
-
-    if not train_vids:
-        raise RuntimeError("Empty train set after filtering. Check pt files and subset in recordings_json.")
-
-    train_ds = GraphPTDataset(pt_dir, train_vids, labels)
-    val_ds = GraphPTDataset(pt_dir, val_vids, labels) if val_vids else None
-    test_ds = GraphPTDataset(pt_dir, test_vids, labels) if test_vids else None
-
-    train_loader = torch.utils.data.DataLoader(
-        train_ds,
-        batch_size=args.batch_size,
-        shuffle=True,
-        num_workers=args.num_workers,
+def make_loader(dataset, batch_size, shuffle, num_workers):
+    return torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=shuffle,
+        num_workers=num_workers,
         collate_fn=collate_graph_samples,
         pin_memory=True,
     )
-    val_loader = torch.utils.data.DataLoader(
-        val_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_graph_samples,
-        pin_memory=True,
-    ) if val_ds else None
-    test_loader = torch.utils.data.DataLoader(
-        test_ds,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_graph_samples,
-        pin_memory=True,
-    ) if test_ds else None
 
-    # infer dims from one sample
-    sample0 = torch.load(pt_dir / f"{train_vids[0]}.pt", map_location="cpu")
+
+def train_model(
+    model: nn.Module,
+    train_loader,
+    val_loader,
+    device: torch.device,
+    optimizer,
+    epochs: int,
+    grad_clip: float,
+) -> Dict[str, torch.Tensor]:
+    best_score = -1e9
+    best_state = None
+    for epoch in range(1, epochs + 1):
+        train_loss = train_one_epoch(model, train_loader, device, optimizer, grad_clip)
+        if val_loader is not None:
+            val_metrics = eval_epoch(model, val_loader, device)
+            score = val_metrics.get("auc", val_metrics.get("f1", -1e9))
+            if score > best_score:
+                best_score = score
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            if epoch % 10 == 0 or epoch == epochs:
+                print(
+                    f"Epoch {epoch:03d}/{epochs} | loss={train_loss:.4f} | "
+                    f"val: {format_metrics(val_metrics)}"
+                )
+        else:
+            if -train_loss > best_score:
+                best_score = -train_loss
+                best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+            if epoch % 10 == 0 or epoch == epochs:
+                print(f"Epoch {epoch:03d}/{epochs} | loss={train_loss:.4f}")
+
+    if best_state is None:
+        best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+    return best_state
+
+
+def run_official_split(args, pt_dir: Path, labels: Dict[str, int], split: Dict[str, List[str]]):
+    split_vids, usable = intersect_split_with_available(split, labels, pt_dir)
+    if not usable:
+        raise RuntimeError("No usable samples after intersecting pt files, labels, and recordings.json")
+
+    train_vids = split_vids["train"]
+    val_vids = split_vids["val"]
+    test_vids = split_vids["test"]
+
+    print("Split sizes (official CaptainCook subset):")
+    print(f"  train={len(train_vids)}, val={len(val_vids)}, test={len(test_vids)}, total_available={len(usable)}")
+
+    if not train_vids:
+        raise RuntimeError("Official train split is empty after filtering to available pt files")
+    if not test_vids:
+        raise RuntimeError("Official test split is empty after filtering to available pt files")
+
+    sample0 = torch.load(pt_dir / f"{usable[0]}.pt", map_location="cpu")
     k_text = find_first_key(sample0, ["x_text", "node_text_emb"])
     k_step = find_first_key(sample0, ["step_x", "step_emb"])
     if k_text is None or k_step is None:
         raise KeyError(f"pt sample missing required keys. Found keys: {list(sample0.keys())}")
-
     dim_text = int(sample0[k_text].shape[1])
     dim_vis = int(sample0[k_step].shape[1])
 
@@ -512,68 +569,170 @@ def main():
         num_layers=args.num_layers,
         dropout=args.dropout,
         aggr=args.aggr,
+        gnn_layer=args.gnn_layer,
     ).to(device)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_best = out_dir / "best.pt"
-    ckpt_last = out_dir / "last.pt"
-
-    # resume / eval-only
-    if args.resume:
-        ckpt = torch.load(args.resume, map_location="cpu")
-        model.load_state_dict(ckpt["model"])
-        if "optimizer" in ckpt and not args.eval_only:
-            optimizer.load_state_dict(ckpt["optimizer"])
-        print(f"[RESUME] loaded {args.resume}")
 
     if args.eval_only:
-        if val_loader:
-            print("[VAL]", eval_epoch(model, val_loader, device))
-        if test_loader:
-            print("[TEST]", eval_epoch(model, test_loader, device))
-        return
+        if not args.resume:
+            raise ValueError("--eval_only requires --resume pointing to a trained checkpoint")
+        checkpoint = torch.load(args.resume, map_location=device)
+        model.load_state_dict(checkpoint)
+        print(f"Loaded checkpoint from {args.resume}")
+    else:
+        train_ds = GraphPTDataset(pt_dir, train_vids, labels)
+        val_ds = GraphPTDataset(pt_dir, val_vids, labels) if val_vids else None
+        train_loader = make_loader(train_ds, args.batch_size, True, args.num_workers)
+        val_loader = make_loader(val_ds, args.batch_size, False, args.num_workers) if val_ds else None
 
-    best_key = "auc"  # prefer AUC if available; fallback to f1
-    best_score = -1e9
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        best_state = train_model(
+            model, train_loader, val_loader, device, optimizer, args.epochs, args.grad_clip
+        )
+        model.load_state_dict(best_state)
+        torch.save(best_state, out_dir / "best.pt")
+        print(f"Saved checkpoint to {out_dir / 'best.pt'}")
 
-    for epoch in range(1, args.epochs + 1):
-        tr_loss = train_one_epoch(model, train_loader, device, optimizer, args.grad_clip)
+    test_ds = GraphPTDataset(pt_dir, test_vids, labels)
+    test_loader = make_loader(test_ds, args.batch_size, False, args.num_workers)
+    test_metrics = eval_epoch(model, test_loader, device)
 
-        val_metrics = None
-        if val_loader:
-            val_metrics = eval_epoch(model, val_loader, device)
+    val_metrics = None
+    if val_vids:
+        val_ds = GraphPTDataset(pt_dir, val_vids, labels)
+        val_loader = make_loader(val_ds, args.batch_size, False, args.num_workers)
+        val_metrics = eval_epoch(model, val_loader, device)
 
-        if val_metrics:
-            score = val_metrics.get(best_key, float("nan"))
-            if score != score:  # nan
-                score = val_metrics.get("f1", 0.0)
-        else:
-            score = -tr_loss
+    print("\n===== Final Test Results (official CaptainCook test split) =====")
+    print(format_metrics(test_metrics))
+    print(
+        f"samples={test_metrics['num_samples']} | "
+        f"tp={test_metrics['tp']} tn={test_metrics['tn']} fp={test_metrics['fp']} fn={test_metrics['fn']}"
+    )
+    if val_metrics is not None:
+        print("\nValidation reference:")
+        print(format_metrics(val_metrics))
 
-        torch.save({"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch}, ckpt_last)
+    results = {
+        "split_mode": "official",
+        "gnn_layer": args.gnn_layer,
+        "label_rule": args.label_rule,
+        "train_size": len(train_vids),
+        "val_size": len(val_vids),
+        "test_size": len(test_vids),
+        "val_metrics": val_metrics,
+        "test_metrics": test_metrics,
+    }
+    with (out_dir / "results.json").open("w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2)
+    print(f"\nResults saved to {out_dir / 'results.json'}")
 
-        if score > best_score:
-            best_score = score
-            torch.save(
-                {"model": model.state_dict(), "optimizer": optimizer.state_dict(), "epoch": epoch, "best_score": best_score},
-                ckpt_best
-            )
 
-        if val_metrics:
-            print(f"Epoch {epoch:03d} | loss={tr_loss:.4f} | val={val_metrics} | best_score={best_score:.4f}")
-        else:
-            print(f"Epoch {epoch:03d} | loss={tr_loss:.4f} | best_score={best_score:.4f}")
+def run_kfold(args, pt_dir: Path, labels: Dict[str, int]):
+    pt_vids = set(p.stem for p in pt_dir.glob("*.pt"))
+    labeled_vids = set(labels.keys())
+    usable = sorted(list(pt_vids & labeled_vids))
+    if not usable:
+        raise RuntimeError("No usable samples: check pt_dir and recordings_json labels")
 
-    # final test with best
-    if ckpt_best.exists():
-        ckpt = torch.load(ckpt_best, map_location="cpu")
-        model.load_state_dict(ckpt["model"])
+    sample0 = torch.load(pt_dir / f"{usable[0]}.pt", map_location="cpu")
+    k_text = find_first_key(sample0, ["x_text", "node_text_emb"])
+    k_step = find_first_key(sample0, ["step_x", "step_emb"])
+    dim_text = int(sample0[k_text].shape[1])
+    dim_vis = int(sample0[k_step].shape[1])
+    device = torch.device(args.device)
 
-    if test_loader:
-        print("[FINAL TEST]", eval_epoch(model, test_loader, device))
+    kfold = KFold(n_splits=args.kfold, shuffle=True, random_state=args.seed)
+    all_test_metrics = []
+
+    for fold, (train_idx, test_idx) in enumerate(kfold.split(usable)):
+        print(f"\n=== Fold {fold + 1}/{args.kfold} ===")
+        train_vids = [usable[i] for i in train_idx]
+        test_vids = [usable[i] for i in test_idx]
+        n_val = max(1, int(len(train_vids) * 0.1))
+        val_vids = train_vids[:n_val]
+        train_vids = train_vids[n_val:]
+
+        model = GraphClassifier(
+            dim_text=dim_text,
+            dim_vis=dim_vis,
+            hidden_dim=args.hidden_dim,
+            num_layers=args.num_layers,
+            dropout=args.dropout,
+            aggr=args.aggr,
+            gnn_layer=args.gnn_layer,
+        ).to(device)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+
+        train_loader = make_loader(GraphPTDataset(pt_dir, train_vids, labels), args.batch_size, True, args.num_workers)
+        val_loader = make_loader(GraphPTDataset(pt_dir, val_vids, labels), args.batch_size, False, args.num_workers)
+        test_loader = make_loader(GraphPTDataset(pt_dir, test_vids, labels), args.batch_size, False, args.num_workers)
+
+        best_state = train_model(model, train_loader, val_loader, device, optimizer, args.epochs, args.grad_clip)
+        model.load_state_dict(best_state)
+        all_test_metrics.append(eval_epoch(model, test_loader, device))
+        print(f"Fold {fold + 1} test: {format_metrics(all_test_metrics[-1])}")
+
+    avg_metrics = {k: float(np.mean([m[k] for m in all_test_metrics])) for k in all_test_metrics[0] if k not in {"tp", "tn", "fp", "fn", "num_samples"}}
+    std_metrics = {k: float(np.std([m[k] for m in all_test_metrics])) for k in avg_metrics}
+
+    print("\n===== K-Fold Summary (mean ± std across folds) =====")
+    for k in avg_metrics:
+        print(f"{k}: {avg_metrics[k]:.4f} ± {std_metrics[k]:.4f}")
+
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    with (out_dir / "cv_results.json").open("w", encoding="utf-8") as f:
+        json.dump({"mean": avg_metrics, "std": std_metrics, "all_folds": all_test_metrics}, f, indent=2)
+    print(f"Results saved to {out_dir / 'cv_results.json'}")
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--graph_pt_dir", required=True)
+    ap.add_argument("--recordings_json", required=True)
+    ap.add_argument("--label_rule", choices=["any_step_error", "video_has_error"], default="any_step_error")
+    ap.add_argument("--output_dir", required=True)
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument(
+        "--split_mode",
+        choices=["official", "kfold"],
+        default="official",
+        help="official: CaptainCook train/val/test from recordings.json; kfold: legacy random K-fold",
+    )
+    ap.add_argument(
+        "--gnn_layer",
+        choices=["dagnn", "digraph"],
+        default="dagnn",
+        help="GNN layer type: DAGNN (default, for DAG task graphs) or legacy DiGraphConv",
+    )
+    ap.add_argument("--seed", type=int, default=123)
+    ap.add_argument("--epochs", type=int, default=50)
+    ap.add_argument("--batch_size", type=int, default=16)
+    ap.add_argument("--lr", type=float, default=1e-3)
+    ap.add_argument("--weight_decay", type=float, default=1e-3)
+    ap.add_argument("--grad_clip", type=float, default=1.0)
+    ap.add_argument("--hidden_dim", type=int, default=256)
+    ap.add_argument("--num_layers", type=int, default=4)
+    ap.add_argument("--dropout", type=float, default=0.3)
+    ap.add_argument("--aggr", choices=["sum", "mean"], default="sum")
+    ap.add_argument("--num_workers", type=int, default=0)
+    ap.add_argument("--eval_only", action="store_true")
+    ap.add_argument("--resume", default="")
+    ap.add_argument("--kfold", type=int, default=5, help="Only used when --split_mode kfold")
+    args = ap.parse_args()
+
+    set_seed(args.seed)
+
+    pt_dir = Path(args.graph_pt_dir)
+    labels, split = load_recordings_combined(Path(args.recordings_json), label_rule=args.label_rule)
+
+    if args.split_mode == "official":
+        run_official_split(args, pt_dir, labels, split)
+    else:
+        run_kfold(args, pt_dir, labels)
 
 
 if __name__ == "__main__":

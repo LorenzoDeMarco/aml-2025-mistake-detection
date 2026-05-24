@@ -79,10 +79,14 @@ def csv_to_json(split_type, video_category):
                 annotations_list = []
                 for i in range(len(recoding_id_step_annotations_json)):
                     step_details = recoding_id_step_annotations_json[i]
-                    step_description = step_details["description"]
-                    step_id = int(step_details["step_id"])
                     start_time = float(step_details["start_time"])
                     end_time = float(step_details["end_time"])
+                    if start_time < 0 or end_time < 0:
+                        continue
+                    
+                    step_description = step_details["description"]
+                    step_id = int(step_details["step_id"])
+                    
                     has_errors = step_details["has_errors"]
 
                     step_id = int(step_id)  # int64 to int as json does not support int64
@@ -95,20 +99,22 @@ def csv_to_json(split_type, video_category):
                             end_time
                         ],
                         "segment(frames)": [
-                            np.floor(start_time * 29.97),
-                            np.ceil(end_time * 29.97)
+                            np.floor(start_time * fps),
+                            np.ceil(end_time * fps)
                         ],
                         "label_id": step_id,
                         "has_error": has_error
                     }
                     annotations_list.append(annotation)
 
+                any_step_error = any(bool(step["has_errors"]) for step in recoding_id_step_annotations_json)
+                any_step_error = any_step_error or (len(annotations_list) == 0)
                 captaincook_dataset[recording_id] = {
                     "subset": data_subset_name_map[data_subset_type],
                     "duration": video_duration,
                     "fps": fps,
                     "annotations": annotations_list,
-                    "has_error": False,
+                    "has_error": any_step_error,
                 }
     json_dataset = {
         "version": captaincook_dataset_version,
