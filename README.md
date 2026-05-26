@@ -295,7 +295,7 @@ To ensure the model learns generalized concepts of "correctness" rather than mem
 
 Using the LOGO strategy for train on all the different recipes and achive bettere result
 ```
- python .\substep3_4\gnn.py --graph_pt_dir .\substep3_3\output_3_3 --recordings_json .\captaincook_actionformer_annotations\combined\recordings.json --epochs 30 --lr 3e-4 --dropout 0.2 --output_dir .\substep3_4\output_dir
+ python .\substep3_4\gnn.py --graph_pt_dir .\substep3_3\output_3_3\official_split\ --recordings_json .\captaincook_actionformer_annotations\combined\recordings.json --epochs 30 --lr 3e-4 --dropout 0.2 --output_dir .\substep3_4\output_dir\official_split\ --strategy logo
 ```
 | Metrics | Value |
 | :--- | :--- |
