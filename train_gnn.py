@@ -6,7 +6,7 @@ import torch.nn.functional as F
 import numpy as np
 import argparse
 from sklearn.model_selection import LeaveOneGroupOut
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score, confusion_matrix
 from core.models.graph_model import GraphClassifier
 from torch.utils.data import DataLoader, Subset
 import wandb
@@ -126,13 +126,14 @@ def collate_graph_batch(batch):
 
 def evaluate_metrics(y_true, y_pred, y_scores=None, average='macro') -> dict:
     """
-    Computes standard classification metrics to evaluate global performance.
+    Computes standard classification metrics including the Confusion Matrix.
     """
     metrics = {
         "accuracy": accuracy_score(y_true, y_pred),
         "precision": precision_score(y_true, y_pred, average=average, zero_division=0),
         "recall": recall_score(y_true, y_pred, average=average, zero_division=0),
-        "f1_score": f1_score(y_true, y_pred, average=average, zero_division=0)
+        "f1_score": f1_score(y_true, y_pred, average=average, zero_division=0),
+        "confusion_matrix": confusion_matrix(y_true, y_pred) # Raw numpy array for console
     }
     if y_scores is not None:
         try:
@@ -370,6 +371,8 @@ Global GNN (Substep 4) LOGO Results ->
     
     best_th, best_f1 = find_optimal_threshold(np.array(all_targets), np.array(all_scores))
     print(f"Optimal Threshold: {best_th:.2f} -> Best F1: {best_f1:.4f}")
+    print("\nConfusion Matrix:")
+    print(total_metrics['confusion_matrix'])
     wandb.log({
         "global/Accuracy": total_metrics['accuracy'],
         "global/Precision": total_metrics['precision'],
@@ -378,7 +381,12 @@ Global GNN (Substep 4) LOGO Results ->
         "global/AUROC": total_metrics['auroc'],
         "global/Optimal_Threshold": best_th,
         "global/Best_F1_at_Threshold": best_f1,
-        "global/Probability_Distribution": wandb.Histogram(all_scores) 
+        "global/Probability_Distribution": wandb.Histogram(all_scores),
+        "global/Confusion_Matrix": wandb.plot.confusion_matrix(
+            y_true=np.array(all_targets), 
+            preds=np.array(all_preds), 
+            class_names=["Correct (0)", "Error (1)"]
+        )
     })
     
     wandb.finish()
