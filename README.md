@@ -148,6 +148,31 @@ with the resault of:
 | **AUC (ROC)** | 0.635 |
 | **PR-AUC** | 0.6483 |
 
+### Official Capitan cook  split
+achieving best result with the hyperparams:
+| Hyperparams | Value |
+| :--- | :--- |
+| **Input Dimension** | 1024 |
+| **Model Dimension** | 256 |
+| **Number of Heads** | 4 |
+| **Number of Layers** | 1 |
+| **Dropout** | 0.1 |
+| **Learning Rate** | 2e-4 |
+| **Epochs** | 10 |
+| **Optimizer** | AdamW / Adam |
+| **Weight Decay** | 0.01 (Default) |
+
+with the resault of:
+
+| Metrics | Value |
+| :--- | :--- |
+| **Accuracy** | 0.6452 |
+| **Precision** | 0.6522 |
+| **Recall** | 0.8333 |
+| **F1-Score** | 0.7317 |
+| **AUC (ROC)** | 0.6528 |
+| **PR-AUC** | 0.7164 |
+
 ### GroundTruth result
 
 achieving best result with the hyperparams:
@@ -265,6 +290,26 @@ To ensure the model learns generalized concepts of "correctness" rather than mem
 - LOO (Leave-One-Out): Evaluates the model's performance on an unseen recording, testing its ability to generalize to new sessions.
 
 - LOGO (Leave-One-Group-Out): A more stringent test that withholds entire recipe types, forcing the model to perform zero-shot verification on completely new culinary procedures.
+
+### Run whit Official CaptainCook split
+
+Using the LOGO strategy for train on all the different recipes and achive bettere result
+```
+ python .\substep3_4\gnn.py --graph_pt_dir .\substep3_3\output_3_3 --recordings_json .\captaincook_actionformer_annotations\combined\recordings.json --epochs 30 --lr 3e-4 --dropout 0.2 --output_dir .\substep3_4\output_dir
+```
+| Metrics | Value |
+| :--- | :--- |
+| **Accuracy** | 0.6452 |
+| **Precision** | 0.6427 |
+| **Recall** | 0.6464 |
+| **F1-Score** | 0.6418 |
+| **AUC (ROC)** | 0.6784 |
+
+CLASS 'Correct' (0) - Precision: 0.7188, Recall: 0.6389
+CLASS 'Error'   (1) - Precision: 0.5667, Recall: 0.6538
+
+
+
 
 ### Run whitout LOGO
 ```
