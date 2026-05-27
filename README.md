@@ -1,6 +1,68 @@
 # AML/DAAI 2025 — Mistake Detection
 
-Four-stage pipeline: **step localization → step embeddings → task-graph matching → GNN verification**, using **PerceptionEncoder (PE)** 1s segment features.
+**Project setup**
+
+**1. Reproduce the the V1 and V2 baselines：Propose a new baseline:LSTM**
+
+**Evaluation: Reproduce the the V1 baselines**
+
+```bash
+python -m core.evaluate  --variant MLP --backbone omnivore  --modality video --ckpt  data/checkpoints/omnivore/MLP/error_recognition_MLP_omnivore_step_epoch_43.pt --split step --threshold 0.6
+```
+
+**Generate checkpoint on LSTM:**
+
+use this command to generate step_data_split_combined.json
+
+```bash
+python core/generate_recordings_combined_splits.py 
+```
+
+if you want have error type analysis, use CaptainCookStepDataset.py to train the checkpoint
+
+```bash
+python train_er.py --backbone omnivore --variant LSTM  --split step
+```
+
+**Evaluation:**
+
+```bash
+python -m core.evaluate  --variant LSTM --backbone omnivore  --modality video --ckpt data/checkpoints/omnivore/LSTM/error_recognition_step_omnivore_LSTM_video_epoch_1.pt --split step --threshold 0.6
+```
+
+
+| Backbones | Baseline | Split | threshold |
+| --------- | -------- | ----- | --------- |
+| Omnivore  | V3: LSTM | step  | 0.6       |
+
+
+test Sub Step Level Metrics:
+
+
+| Metric    | Value               |
+| --------- | ------------------- |
+| Accuracy  | 0.6806857628639573  |
+| Precision | 0.45546774882528834 |
+| Recall    | 0.7195883246161633  |
+| F1        | 0.5578444836832124  |
+| AUC       | 0.7649622844068281  |
+| PR-AUC    | 0.4062              |
+
+
+test Step Level Metrics:
+
+
+| Metric    | Value              |
+| --------- | ------------------ |
+| Accuracy  | 0.7894736842105263 |
+| Precision | 0.6816143497757847 |
+| Recall    | 0.6104417670682731 |
+| F1        | 0.6440677966101694 |
+| AUC       | 0.8272433998288234 |
+| PR-AUC    | 0.5376             |
+
+
+2.Four-stage extension pipeline: **step localization → step embeddings → task-graph matching → GNN verification**, using **PerceptionEncoder (PE)** 1s segment features.
 
 ```
 CaptainCook pipeline
@@ -255,14 +317,14 @@ Validation (early stopping ): accuracy=0.6452, F1=0.5769, AUC=0.7126.
 | Metric    | Value  |
 | --------- | ------ |
 | Accuracy  | 0.5185 |
-| Precision | 0.4576 |
-| Recall    | 0.5745 |
-| F1        | 0.5094 |
-| AUC       | 0.5581 |
-| PR-AUC    | 0.5190 |
+| Precision | 0.4658 |
+| Recall    | 0.7234 |
+| F1        | 0.5667 |
+| AUC       | 0.5795 |
+| PR-AUC    | 0.5078 |
 
 
-Confusion: tp=27, tn=29, fp=32, fn=20.
+Confusion: tp=34, tn=22, fp=39, fn=13. Label: 1=correct, 0=incorrect.
 
 Validation (early stopping): accuracy=0.6452, F1=0.6071, AUC=0.6880.
 
@@ -272,7 +334,7 @@ Validation (early stopping): accuracy=0.6452, F1=0.6071, AUC=0.6880.
 | Method                  | Accuracy | F1     | AUC    |
 | ----------------------- | -------- | ------ | ------ |
 | Transformer (Substep 2) | 0.6481   | 0.6200 | 0.6418 |
-| DAGNN (Substep 4)       | 0.5185   | 0.5094 | 0.5581 |
+| DAGNN (Substep 4)       | 0.5185   | 0.5667 | 0.5795 |
 
 
 Both use the same 108-video CaptainCook test split.

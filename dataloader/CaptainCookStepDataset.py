@@ -110,84 +110,37 @@ class CaptainCookStepDataset(Dataset):
         return recording_step_dictionary
 
     def _init_step_split(self, config, phase):
-        self._recording_ids_file = "recordings_combined_splits.json"
-        print(f"Loading recording ids from {self._recording_ids_file}")
-        # annotations_file_path = os.path.join(os.path.dirname(__file__), f'../er_annotations/{
-        # self._recording_ids_file}')
-        annotations_file_path = f"./er_annotations/{self._recording_ids_file}"
-        with open(f'{annotations_file_path}', 'r') as file:
-            self._recording_ids_json = json.load(file)
+        self._recording_ids_file = "step_data_split_combined.json"
+        print(f"Loading step ids from annotations/data_splits/{self._recording_ids_file}")
+        with open(f"annotations/data_splits/{self._recording_ids_file}", "r") as file:
+            step_split_json = json.load(file)
 
-        self._recording_ids = self._recording_ids_json['train'] + self._recording_ids_json['val'] + \
-                              self._recording_ids_json['test']
+        # Phase names in training code do not match JSON split names for val/test:
+        #   StepDataset phase 'test' -> JSON 'val'  (16% hold-out, val_loader in training)
+        #   StepDataset phase 'val'  -> JSON 'test' (9% hold-out, test_loader in training)
+        phase_to_json_keys = {
+            "train": ["train"],
+            "test": ["val"],
+            "val": ["test"],
+        }
+        step_keys = []
+        for json_key in phase_to_json_keys[phase]:
+            step_keys.extend(step_split_json[json_key])
 
         self._step_dict = {}
-        step_index_id = 0
-        for recording_id in self._recording_ids:
-            self._normal_step_dict = {}
-            self._error_step_dict = {}
-            normal_index_id = 0
-            error_index_id = 0
-            # 1. Prepare step_id, list(<start, end>) for the recording_id
+        index_id = 0
+        for step_key in step_keys:
+            recording_id, step_id_str = step_key.rsplit("_", 1)
+            step_id = int(step_id_str)
             recording_step_dictionary = self._prepare_recording_step_dictionary(recording_id)
-
-            # 2. Add step start and end time list to the step_dict
-            for step_id in recording_step_dictionary.keys():
-                # If the step has errors, add it to the error_step_dict, else add it to the normal_step_dict
-                if recording_step_dictionary[step_id][0][2]:
-                    #setup1: open meta info for error type analysis
-                    self._error_step_dict[f'E{error_index_id}'] = (recording_id, step_id, recording_step_dictionary[step_id])
-                    error_index_id += 1
-                else:
-                    #setup1: open meta info for error type analysis
-                    self._normal_step_dict[f'N{normal_index_id}'] = (recording_id, step_id, recording_step_dictionary[step_id])
-                    normal_index_id += 1
-
-            np.random.seed(config.seed)
-            np.random.shuffle(list(self._normal_step_dict.keys()))
-            np.random.shuffle(list(self._error_step_dict.keys()))
-
-            normal_step_indices = list(self._normal_step_dict.keys())
-            error_step_indices = list(self._error_step_dict.keys())
-
-            self._split_proportion = [0.75, 0.16, 0.9]
-
-            num_normal_steps = len(normal_step_indices)
-            num_error_steps = len(error_step_indices)
-
-            self._split_proportion_normal = [int(num_normal_steps * self._split_proportion[0]),
-                                             int(num_normal_steps * (
-                                                     self._split_proportion[0] + self._split_proportion[1]))]
-            self._split_proportion_error = [int(num_error_steps * self._split_proportion[0]),
-                                            int(num_error_steps * (
-                                                    self._split_proportion[0] + self._split_proportion[1]))]
-
-            if phase == 'train':
-                self._train_normal = normal_step_indices[:self._split_proportion_normal[0]]
-                self._train_error = error_step_indices[:self._split_proportion_error[0]]
-                train_indices = self._train_normal + self._train_error
-                for index_id in train_indices:
-                    self._step_dict[step_index_id] = self._normal_step_dict.get(index_id,
-                                                                                self._error_step_dict.get(index_id))
-                    step_index_id += 1
-            elif phase == 'test':
-                self._val_normal = normal_step_indices[
-                                   self._split_proportion_normal[0]:self._split_proportion_normal[1]]
-                self._val_error = error_step_indices[
-                                  self._split_proportion_error[0]:self._split_proportion_error[1]]
-                val_indices = self._val_normal + self._val_error
-                for index_id in val_indices:
-                    self._step_dict[step_index_id] = self._normal_step_dict.get(index_id,
-                                                                                self._error_step_dict.get(index_id))
-                    step_index_id += 1
-            elif phase == 'val':
-                self._test_normal = normal_step_indices[self._split_proportion_normal[1]:]
-                self._test_error = error_step_indices[self._split_proportion_error[1]:]
-                test_indices = self._test_normal + self._test_error
-                for index_id in test_indices:
-                    self._step_dict[step_index_id] = self._normal_step_dict.get(index_id,
-                                                                                self._error_step_dict.get(index_id))
-                    step_index_id += 1
+            if step_id not in recording_step_dictionary:
+                continue
+            self._step_dict[index_id] = (
+                recording_id,
+                step_id,
+                recording_step_dictionary[step_id],
+            )
+            index_id += 1
 
     def _init_other_split_from_file(self, config, phase):
         self._recording_ids_file = f"{self._split}_combined_splits.json"

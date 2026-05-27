@@ -24,34 +24,62 @@ class CaptainCookSubStepDataset(Dataset):
         assert self._phase in ["train", "val", "test"], f"Invalid phase: {self._phase}"
         self._features_directory = self._config.segment_features_directory
 
-        self._recording_ids_file = f"{self._split}_data_split_combined.json"
-
-        with open(f'annotations/data_splits/{self._recording_ids_file}', 'r') as file:
-            self._recording_ids_json = json.load(file)
+        split_ids_file = f"{self._split}_data_split_combined.json"
+        with open(f'annotations/data_splits/{split_ids_file}', 'r') as file:
+            split_ids_json = json.load(file)
 
         if self._phase == 'train':
-            self._recording_ids = self._recording_ids_json['train'] + self._recording_ids_json['val']
+            phase_ids = split_ids_json['train'] + split_ids_json['val']
         else:
-            self._recording_ids = self._recording_ids_json[self._phase]
+            phase_ids = split_ids_json[self._phase]
 
         with open('annotations/annotation_json/step_annotations.json', 'r') as f:
             self._annotations = json.load(f)
 
-        sub_step_id = 0
         self._sub_step_dict = {}
-        for recording_id in self._recording_ids:
+        if self._split == const.STEP_SPLIT:
+            self._build_sub_step_dict_from_step_keys(phase_ids)
+        else:
+            self._build_sub_step_dict_from_recording_ids(phase_ids)
+
+    @staticmethod
+    def _parse_step_split_key(step_key):
+        recording_id, step_id_str = step_key.rsplit('_', 1)
+        return recording_id, int(step_id_str)
+
+    def _append_sub_steps_for_step(self, sub_step_id, recording_id, step):
+        if step['start_time'] < 0 or step['end_time'] < 0:
+            return sub_step_id
+
+        start_time = math.floor(step['start_time'])
+        end_time = math.floor(step['end_time'])
+        for sub_step_time in range(start_time, end_time):
+            self._sub_step_dict[sub_step_id] = (
+                recording_id, (sub_step_time, sub_step_time + 1), step['has_errors'])
+            sub_step_id += 1
+        return sub_step_id
+
+    def _build_sub_step_dict_from_step_keys(self, step_keys):
+        sub_step_id = 0
+        for step_key in step_keys:
+            recording_id, step_id = self._parse_step_split_key(step_key)
+            if recording_id not in self._annotations:
+                continue
+            step = next(
+                (s for s in self._annotations[recording_id]['steps'] if s['step_id'] == step_id),
+                None,
+            )
+            if step is None:
+                continue
+            sub_step_id = self._append_sub_steps_for_step(sub_step_id, recording_id, step)
+
+    def _build_sub_step_dict_from_recording_ids(self, recording_ids):
+        sub_step_id = 0
+        for recording_id in recording_ids:
+            if recording_id not in self._annotations:
+                continue
             for step in self._annotations[recording_id]['steps']:
-                if step['start_time'] < 0 or step['end_time'] < 0:
-                    # Ignore missing steps
-                    continue
-
-                start_time = math.floor(step['start_time'])
-                end_time = math.floor(step['end_time'])
-
-                for sub_step_time in range(start_time, end_time):
-                    self._sub_step_dict[sub_step_id] = (
-                    recording_id, (sub_step_time, sub_step_time + 1), step['has_errors'])
-                    sub_step_id += 1
+                sub_step_id = self._append_sub_steps_for_step(sub_step_id, recording_id, step)
 
     def __len__(self):
         assert len(self._sub_step_dict) > 0, "No data found in the dataset"
