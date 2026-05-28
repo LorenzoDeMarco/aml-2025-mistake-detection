@@ -121,11 +121,12 @@ def run_debug():
             vm  = batch["visual_mask"].to(device)
             tm  = batch["text_mask"].to(device)
             ei  = batch["edge_indices"]
+            nd  = batch["node_depths"].to(device)
             lbl = batch["labels"].to(device)
 
             optimizer.zero_grad()
             
-            logits, align_loss = model(vis, txt, vm, tm, ei) 
+            logits, align_loss = model(vis, txt, vm, tm, ei, nd) 
             
             # --- APPLICAZIONE FOCAL LOSS PURA (Niente label smoothing) ---
             classification_loss = criterion(logits, lbl.float())
@@ -177,9 +178,10 @@ def run_debug():
             vm  = batch["visual_mask"].to(device)
             tm  = batch["text_mask"].to(device)
             ei  = batch["edge_indices"]
+            nd  = batch["node_depths"].to(device)
             lbl = batch["labels"]
             
-            logits, _ = model(vis, txt, vm, tm, ei)
+            logits, _ = model(vis, txt, vm, tm, ei, nd)
             probs = torch.sigmoid(logits).cpu().numpy()
             all_probs.extend(probs)
             all_gts.extend(lbl.numpy())
