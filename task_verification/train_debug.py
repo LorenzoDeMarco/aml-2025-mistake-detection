@@ -1,11 +1,14 @@
-# debug_gnn.py
+# train_debug.py
+# Confronto diretto: BCE+Cosine vs FocalLoss+Cosine
+# Su un mini-LOGO reale (3 fold) per una risposta rapida e affidabile.
+# Tempo atteso: ~6 minuti totali.
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
-import pandas as pd
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score
+from sklearn.metrics import accuracy_score, roc_auc_score, f1_score, recall_score
 
 try:
     from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
@@ -14,165 +17,99 @@ except ModuleNotFoundError:
     from dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
     from GNN import TaskVerificationGNN
 
-# --- NUOVA FOCAL LOSS ---
+
+# ─── Loss functions ──────────────────────────────────────────────────────────
+
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
-        super(FocalLoss, self).__init__()
+    def __init__(self, alpha=0.25, gamma=2.0):
+        super().__init__()
         self.alpha = alpha
         self.gamma = gamma
-        self.reduction = reduction
 
     def forward(self, inputs, targets):
-        bce_loss = nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        pt = torch.exp(-bce_loss)
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
-        
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        return focal_loss
+        bce = nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt  = torch.exp(-bce)
+        return (self.alpha * (1 - pt) ** self.gamma * bce).mean()
 
 
-def run_debug():
-    args = {
-        'visual_npz':      'step_embeddings.npz',
-        'text_npz':        'text_task_graphs_v2.npz',  
-        'graph_zip':       'annotations/task_graphs',
-        'annotations_json':'annotations/annotation_json/complete_step_annotations.json',
-        'batch_size':      16, 
-        'epochs':          25, 
-        'lr':              2e-4,
-        'weight_decay':    1e-2,
-        'dropout':         0.4,
-    }
+# ─── Single fold training ────────────────────────────────────────────────────
+
+def train_one_fold(train_ids, test_ids, global_visual, global_text, args, use_focal):
+    """
+    Trains and evaluates a single fold.
+    Returns dict with AUROC, F1, Recall, Accuracy, prob separation.
+    """
+    torch.manual_seed(args['seed'])
+    np.random.seed(args['seed'])
+    torch.cuda.manual_seed_all(args['seed'])
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Device: {device}")
 
-    print("\nLoading NPZ files into RAM...")
-    global_visual = {k.replace('.npy',''): v.astype(np.float32)
-                     for k, v in np.load(args['visual_npz']).items()}
-    global_text   = {k.replace('.npy',''): v.astype(np.float32)
-                     for k, v in np.load(args['text_npz']).items()}
+    train_ds = TaskVerificationGraphDataset(
+        preloaded_visual=global_visual, preloaded_text=global_text,
+        graph_zip_path=args['graph_zip'], annotations_path=args['annotations_json'],
+        video_ids=train_ids, split='train'
+    )
+    test_ds = TaskVerificationGraphDataset(
+        preloaded_visual=global_visual, preloaded_text=global_text,
+        graph_zip_path=args['graph_zip'], annotations_path=args['annotations_json'],
+        video_ids=test_ids, split='test'
+    )
 
-    all_ids = sorted(list(global_visual.keys()))
-    
-    # Per il debug veloce, prendiamo solo i primi 64 video
-    debug_train_ids = all_ids[:64] 
-    
-    print(f"Creating Dataset with {len(debug_train_ids)} videos for OVERFITTING TEST...")
-    train_dataset = TaskVerificationGraphDataset(
-        preloaded_visual=global_visual,
-        preloaded_text=global_text,
-        graph_zip_path=args['graph_zip'],
-        annotations_path=args['annotations_json'],
-        video_ids=debug_train_ids,
-        split='train'
-    )
-    
-    train_loader = DataLoader(
-        train_dataset, batch_size=args['batch_size'], shuffle=True,
-        num_workers=2, collate_fn=graph_collate_fn, pin_memory=True
-    )
+    train_loader = DataLoader(train_ds, batch_size=args['batch_size'], shuffle=True,
+                              num_workers=2, collate_fn=graph_collate_fn, pin_memory=True)
+    test_loader  = DataLoader(test_ds,  batch_size=args['batch_size'], shuffle=False,
+                              num_workers=2, collate_fn=graph_collate_fn, pin_memory=True)
 
     model = TaskVerificationGNN(dropout=args['dropout']).to(device)
-    
-    # --- ACCELERATORE: Differential Learning Rate ---
-    projector_params = []
-    base_params = []
-    fast_learning_keys = ['sim_visual_proj', 'sim_text_proj', 'logit_scale', 'step_positional_encoding']
-    
+
+    proj_params, base_params = [], []
     for name, param in model.named_parameters():
-        if any(key in name for key in fast_learning_keys):
-            projector_params.append(param)
+        if any(k in name for k in ['sim_visual_proj', 'sim_text_proj', 'logit_scale']):
+            proj_params.append(param)
         else:
             base_params.append(param)
-            
+
     optimizer = optim.AdamW([
-        {'params': base_params, 'lr': args['lr']},
-        {'params': projector_params, 'lr': args['lr'] * 5.0} 
+        {'params': base_params,  'lr': args['lr']},
+        {'params': proj_params,  'lr': args['lr'] * 5.0}
     ], weight_decay=args['weight_decay'])
-    
-    # --- SOSTITUZIONE BCE CON FOCAL LOSS E AGGIUNTA SCHEDULER ---
-    criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction='mean')
+
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
 
-    print("\nStarting Debug Training Loop (Focal Loss & Cosine Scheduler Check)...")
-    print("-" * 100)
-    print(f"{'Epoch':<6} | {'Tot Loss':<10} | {'Cls Loss':<10} | {'InfoNCE':<10} | {'AlgnWt':<6} | {'LR (Base)':<10} | {'Separation'}")
-    print("-" * 100)
+    if use_focal:
+        criterion = FocalLoss(alpha=0.25, gamma=2.0)
+        label_fn  = lambda lbl: lbl.float()           # no smoothing with Focal
+    else:
+        criterion = nn.BCEWithLogitsLoss(reduction='mean')
+        ls = 0.1
+        label_fn  = lambda lbl: lbl * (1 - ls) + (1 - lbl) * ls   # label smoothing with BCE
 
     for epoch in range(1, args['epochs'] + 1):
-        
-        current_align_weight = max(0.1, 1.0 * (0.8 ** (epoch - 1)))
-        current_lr = optimizer.param_groups[0]['lr']
-        
+        align_weight = max(0.1, 1.0 * (0.8 ** (epoch - 1)))
         model.train()
-        train_loss = 0.0
-        total_cls_loss = 0.0
-        total_align_loss = 0.0
-        
-        epoch_probs = []
-        epoch_gts = []
-
         for batch in train_loader:
-            vis = batch["visual_features"].to(device)
-            txt = batch["text_features"].to(device)
-            vm  = batch["visual_mask"].to(device)
-            tm  = batch["text_mask"].to(device)
-            ei  = batch["edge_indices"]
-            nd  = batch["node_depths"].to(device)
-            lbl = batch["labels"].to(device)
+            vis  = batch["visual_features"].to(device)
+            txt  = batch["text_features"].to(device)
+            vm   = batch["visual_mask"].to(device)
+            tm   = batch["text_mask"].to(device)
+            ei   = batch["edge_indices"]
+            nd   = batch["node_depths"].to(device)
+            lbl  = batch["labels"].to(device)
 
             optimizer.zero_grad()
-            
-            logits, align_loss = model(vis, txt, vm, tm, ei, nd) 
-            
-            # --- APPLICAZIONE FOCAL LOSS PURA (Niente label smoothing) ---
-            classification_loss = criterion(logits, lbl.float())
-            
-            loss = classification_loss + current_align_weight * align_loss 
-            
+            logits, align_loss = model(vis, txt, vm, tm, ei, nd)
+            loss = criterion(logits, label_fn(lbl)) + align_weight * align_loss
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
-            
-            bsz = vis.size(0)
-            train_loss += loss.item() * bsz
-            total_cls_loss += classification_loss.item() * bsz
-            total_align_loss += align_loss.item() * bsz
-            
-            with torch.no_grad():
-                probs = torch.sigmoid(logits).cpu().numpy()
-                epoch_probs.extend(probs)
-                epoch_gts.extend(lbl.cpu().numpy())
-
-        # Step dello scheduler alla fine di ogni epoca
         scheduler.step()
 
-        avg_loss = train_loss / len(train_dataset)
-        avg_cls = total_cls_loss / len(train_dataset)
-        avg_align = total_align_loss / len(train_dataset)
-        
-        epoch_probs = np.array(epoch_probs)
-        epoch_gts = np.array(epoch_gts)
-        
-        mean_prob_gt1 = epoch_probs[epoch_gts == 1].mean() if len(epoch_probs[epoch_gts == 1]) > 0 else 0
-        mean_prob_gt0 = epoch_probs[epoch_gts == 0].mean() if len(epoch_probs[epoch_gts == 0]) > 0 else 0
-        live_sep = mean_prob_gt1 - mean_prob_gt0
-
-        print(f"{epoch:<6} | {avg_loss:<10.4f} | {avg_cls:<10.4f} | {avg_align:<10.4f} | {current_align_weight:<6.3f} | {current_lr:<10.6f} | {live_sep:+.4f}")
-
-    # ==========================================
-    # VALUTAZIONE FINALE SUL TRAINING (OVERFIT)
-    # ==========================================
-    print("-" * 100)
+    # ── Evaluation ──
     model.eval()
-    all_probs = []
-    all_gts = []
-
+    all_probs, all_gts = [], []
     with torch.no_grad():
-        for batch in train_loader:
+        for batch in test_loader:
             vis = batch["visual_features"].to(device)
             txt = batch["text_features"].to(device)
             vm  = batch["visual_mask"].to(device)
@@ -180,31 +117,110 @@ def run_debug():
             ei  = batch["edge_indices"]
             nd  = batch["node_depths"].to(device)
             lbl = batch["labels"]
-            
+
             logits, _ = model(vis, txt, vm, tm, ei, nd)
-            probs = torch.sigmoid(logits).cpu().numpy()
-            all_probs.extend(probs)
+            all_probs.extend(torch.sigmoid(logits).cpu().numpy())
             all_gts.extend(lbl.numpy())
 
-    all_probs = np.array(all_probs)
-    all_gts   = np.array(all_gts)
-    sep = all_probs[all_gts==1].mean() - all_probs[all_gts==0].mean()
-    acc = accuracy_score(all_gts, (all_probs >= 0.5).astype(int))
-    
-    print("\n🔍 RISULTATI ANALISI OVERFITTING (FOCAL LOSS + COSINE LR):")
-    print(f"  Training Accuracy: {acc:.4f}")
-    print(f"  Media Probabilità (Video Corretti, GT=0): {all_probs[all_gts==0].mean():.4f} ± {all_probs[all_gts==0].std():.4f}")
-    print(f"  Media Probabilità (Video con Errore, GT=1): {all_probs[all_gts==1].mean():.4f} ± {all_probs[all_gts==1].std():.4f}")
-    print(f"  Distanza di Separazione Finale: {sep:+.4f}")
+    probs = np.array(all_probs)
+    gts   = np.array(all_gts)
+    preds = (probs >= 0.5).astype(int)
 
-    if sep > 0.10:
-        print("\n  🚀 ECCELLENTE: Il modello overfitta perfettamente i dati! Focal Loss sta discriminando.")
-    elif sep > 0.05:
-        print("\n  ✅ SUCCESSO: La distanza tra le classi è buona, lo scheduler aiuta la stabilità.")
-    elif sep > 0.01:
-        print("\n  ⚠️ ALLERTA: Segnale debole. Possibile problema di tuning.")
-    else:
-        print("\n  ❌ FALLIMENTO: Collasso delle rappresentazioni. Il modello non converge.")
+    sep = probs[gts == 1].mean() - probs[gts == 0].mean() if gts.sum() > 0 and (gts == 0).sum() > 0 else 0.0
+
+    try:
+        auroc = roc_auc_score(gts, probs)
+    except Exception:
+        auroc = float('nan')
+
+    return {
+        'auroc': auroc,
+        'f1':    f1_score(gts, preds, zero_division=0),
+        'rec':   recall_score(gts, preds, zero_division=0),
+        'acc':   accuracy_score(gts, preds),
+        'sep':   sep,
+        'n_test': len(gts)
+    }
+
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+def run_debug():
+    args = {
+        'visual_npz':       'step_embeddings.npz',
+        'text_npz':         'text_task_graphs_v2.npz',
+        'graph_zip':        'annotations/task_graphs',
+        'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
+        'batch_size': 16,
+        'epochs':     25,       # 25 epoche: abbastanza per vedere convergenza, veloce (~1 min/fold)
+        'lr':         2e-4,
+        'weight_decay': 1e-2,
+        'dropout':    0.4,
+        'seed':       42,
+    }
+
+    print("Loading NPZ files into RAM...")
+    global_visual = {k.replace('.npy', ''): v.astype(np.float32)
+                     for k, v in np.load(args['visual_npz']).items()}
+    global_text   = {k.replace('.npy', ''): v.astype(np.float32)
+                     for k, v in np.load(args['text_npz']).items()}
+
+    all_ids = sorted(list(global_visual.keys()))
+
+    # ── Mini-LOGO: 3 fold rappresentativi ──────────────────────────────────
+    # Scegliamo recipe con caratteristiche diverse:
+    #   recipe 1  → alta separazione nelle run precedenti (buona baseline)
+    #   recipe 17 → separazione negativa nelle run precedenti (caso difficile)
+    #   recipe 20 → separazione medio-alta (caso medio)
+    TEST_RECIPES = ['1', '17', '20']
+
+    recipe_groups = {}
+    for vid in all_ids:
+        r = vid.split('_')[0]
+        recipe_groups.setdefault(r, []).append(vid)
+
+    print(f"\n{'='*80}")
+    print(f"  Mini-LOGO Debug: 3 fold x 2 loss = 6 training run (~6 min totali)")
+    print(f"  Fold: recipe {TEST_RECIPES}  |  Epoche: {args['epochs']}  |  Seed: {args['seed']}")
+    print(f"{'='*80}\n")
+    print(f"{'Recipe':<10} | {'Loss':<10} | {'AUROC':<7} | {'F1':<7} | {'Rec':<7} | {'Acc':<7} | {'Sep':>7} | {'N_test'}")
+    print("-" * 80)
+
+    results = {'bce': {}, 'focal': {}}
+
+    for recipe_id in TEST_RECIPES:
+        if recipe_id not in recipe_groups:
+            print(f"  Recipe {recipe_id} not found, skipping.")
+            continue
+
+        test_ids  = recipe_groups[recipe_id]
+        train_ids = [v for v in all_ids if v not in test_ids]
+
+        for loss_name, use_focal in [('BCE+LS', False), ('Focal', True)]:
+            r = train_one_fold(train_ids, test_ids, global_visual, global_text, args, use_focal)
+            results[loss_name if loss_name != 'BCE+LS' else 'bce'][recipe_id] = r
+            print(f"  {recipe_id:<8} | {loss_name:<10} | {r['auroc']:.4f} | {r['f1']:.4f} | {r['rec']:.4f} | {r['acc']:.4f} | {r['sep']:+.4f} | {r['n_test']}")
+
+    # ── Sommario aggregato ─────────────────────────────────────────────────
+    print(f"\n{'='*80}")
+    print("  SOMMARIO (media sui 3 fold)")
+    print(f"{'='*80}")
+
+    for loss_name, key in [('BCE + LabelSmoothing', 'bce'), ('Focal Loss (no smooth)', 'focal')]:
+        fold_res = results[key]
+        if not fold_res:
+            continue
+        metrics = {m: np.mean([fold_res[r][m] for r in fold_res]) for m in ['auroc', 'f1', 'rec', 'acc', 'sep']}
+        print(f"  {loss_name:<30} | AUROC={metrics['auroc']:.4f} | F1={metrics['f1']:.4f} | "
+              f"Rec={metrics['rec']:.4f} | Acc={metrics['acc']:.4f} | Sep={metrics['sep']:+.4f}")
+
+    print(f"\n{'='*80}")
+    print("  INTERPRETAZIONE:")
+    print("  - Sep > +0.10  →  buona discriminazione")
+    print("  - Sep < 0      →  inversione (failure mode)")
+    print("  - Recall è la metrica prioritaria per mistake detection")
+    print(f"{'='*80}\n")
+
 
 if __name__ == '__main__':
     run_debug()
