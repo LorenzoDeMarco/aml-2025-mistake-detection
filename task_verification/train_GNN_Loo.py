@@ -70,11 +70,6 @@ def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, g
         {'params': projector_params, 'lr': args['lr'] * 5.0}
     ], weight_decay=args['weight_decay'])
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer,
-        T_max=args['epochs'],
-        eta_min=1e-5
-    )
 
     criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
@@ -111,16 +106,14 @@ def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, g
             optimizer.step()
             train_loss += classification_loss.item() * vis_feat.size(0)
 
-        scheduler.step()
 
-        current_lr = optimizer.param_groups[0]['lr']
         epoch_loss = train_loss / len(train_dataset)
-        wandb.log({"train/loss": epoch_loss, "train/lr": current_lr, "epoch": epoch, "align_weight": current_align_weight})
+        wandb.log({"train/loss": epoch_loss, "train/lr": args['lr'], "epoch": epoch, "align_weight": current_align_weight})
 
         epoch_duration = time.time() - epoch_start_time
 
         if epoch == 1 or epoch == args['epochs'] or epoch % 5 == 0:
-            print(f"    -> Epoch {epoch:02d}/{args['epochs']} | Loss: {epoch_loss:.4f} | AlignWt: {current_align_weight:.3f} | LR: {current_lr:.2e} | Time: {epoch_duration:.2f}s")
+            print(f"    -> Epoch {epoch:02d}/{args['epochs']} | Loss: {epoch_loss:.4f} | AlignWt: {current_align_weight:.3f} | Time: {epoch_duration:.2f}s")
 
     model.eval()
     fold_results = []
@@ -164,7 +157,7 @@ if __name__ == "__main__":
         'lr': 2e-4,
         'weight_decay': 1e-2,
         'dropout': 0.4,
-        'base_seed': 42,
+        'base_seed': 0,
     }
 
     global_start_time = time.time()
