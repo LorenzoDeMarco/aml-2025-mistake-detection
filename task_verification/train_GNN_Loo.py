@@ -157,7 +157,7 @@ if __name__ == "__main__":
         'lr': 2e-4,
         'weight_decay': 1e-2,
         'dropout': 0.4,
-        'base_seed': 0,
+        'base_seed': 42,
     }
 
     global_start_time = time.time()
