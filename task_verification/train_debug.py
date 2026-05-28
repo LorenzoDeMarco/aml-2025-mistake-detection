@@ -198,7 +198,7 @@ def run_debug():
 
         for loss_name, use_focal in [('BCE+LS', False), ('Focal', True)]:
             r = train_one_fold(train_ids, test_ids, global_visual, global_text, args, use_focal)
-            results[loss_name if loss_name != 'BCE+LS' else 'bce'][recipe_id] = r
+            results['bce' if loss_name == 'BCE+LS' else 'focal'][recipe_id] = r
             print(f"  {recipe_id:<8} | {loss_name:<10} | {r['auroc']:.4f} | {r['f1']:.4f} | {r['rec']:.4f} | {r['acc']:.4f} | {r['sep']:+.4f} | {r['n_test']}")
 
     # ── Sommario aggregato ─────────────────────────────────────────────────
