@@ -13,33 +13,17 @@ import time
 from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
 from task_verification.GNN import TaskVerificationGNN
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
-        super(FocalLoss, self).__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-
-    def forward(self, inputs, targets):
-        bce_loss = nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
-        pt = torch.exp(-bce_loss) # Probability of the correct class
-        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
-        
-        if self.reduction == 'mean':
-            return focal_loss.mean()
-        elif self.reduction == 'sum':
-            return focal_loss.sum()
-        return focal_loss
-
 
 def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
     torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, global_text, args):
-    # Deterministic seed, different per fold to preserve cross-fold variability
+    #deterministic seed but different for each fold to ensure variability across LOO iterations
     set_seed(args['base_seed'] + fold_id)
 
     wandb.init(
@@ -86,13 +70,14 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
         {'params': projector_params, 'lr': args['lr'] * 5.0}
     ], weight_decay=args['weight_decay'])
 
-    #replaced BCEWithLogitsLoss with FocalLoss to handle class imbalance more effectively
-    #criterion = nn.BCEWithLogitsLoss(reduction='mean')
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=args['epochs'],
+        eta_min=1e-5
+    )
+
+    criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
-
-    criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction='mean')
-
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
 
     print(f"    [Setup] Train : {len(train_ids)} video | Test : {len(test_ids)} video | Seed: {args['base_seed'] + fold_id}")
 
@@ -112,10 +97,8 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
             edge_idx_list = batch["edge_indices"]
             node_depths = batch["node_depths"].to(device)
             labels = batch["labels"].to(device)
-            
-            # removed label smoothing for FocalLoss, as it already incorporates a mechanism to handle class imbalance
-            #smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
-            smoothed_labels = labels
+
+            smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
 
             optimizer.zero_grad()
             logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list, node_depths)
@@ -129,14 +112,15 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
             train_loss += classification_loss.item() * vis_feat.size(0)
 
         scheduler.step()
-        scheduler_lr = optimizer.param_groups[0]['lr']
+
+        current_lr = optimizer.param_groups[0]['lr']
         epoch_loss = train_loss / len(train_dataset)
-        wandb.log({"train/loss": epoch_loss, "train/lr": scheduler_lr, "epoch": epoch, "align_weight": current_align_weight})
+        wandb.log({"train/loss": epoch_loss, "train/lr": current_lr, "epoch": epoch, "align_weight": current_align_weight})
 
         epoch_duration = time.time() - epoch_start_time
 
         if epoch == 1 or epoch == args['epochs'] or epoch % 5 == 0:
-            print(f"    -> Epoch {epoch:02d}/{args['epochs']} | Loss: {epoch_loss:.4f} | AlignWt: {current_align_weight:.3f} | Time: {epoch_duration:.2f}s")
+            print(f"    -> Epoch {epoch:02d}/{args['epochs']} | Loss: {epoch_loss:.4f} | AlignWt: {current_align_weight:.3f} | LR: {current_lr:.2e} | Time: {epoch_duration:.2f}s")
 
     model.eval()
     fold_results = []
@@ -171,7 +155,7 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
 
 if __name__ == "__main__":
     hyperparameters = {
-        'visual_npz': 'step_embeddings.npz',
+        'visual_npz': 'step_embeddings_dataset.npz',
         'text_npz': 'text_task_graphs_v2.npz',
         'graph_zip': 'annotations/task_graphs',
         'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
