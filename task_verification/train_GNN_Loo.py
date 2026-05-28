@@ -23,7 +23,7 @@ def set_seed(seed):
 
 
 def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, global_text, args):
-    #deterministic seed but different for each fold to ensure variability across LOO iterations
+    # Deterministic seed, different per fold to preserve cross-fold variability
     set_seed(args['base_seed'] + fold_id)
 
     wandb.init(
@@ -70,7 +70,6 @@ def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, g
         {'params': projector_params, 'lr': args['lr'] * 5.0}
     ], weight_decay=args['weight_decay'])
 
-
     criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
 
@@ -106,9 +105,9 @@ def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, g
             optimizer.step()
             train_loss += classification_loss.item() * vis_feat.size(0)
 
-
+        scheduler_lr = optimizer.param_groups[0]['lr']
         epoch_loss = train_loss / len(train_dataset)
-        wandb.log({"train/loss": epoch_loss, "train/lr": args['lr'], "epoch": epoch, "align_weight": current_align_weight})
+        wandb.log({"train/loss": epoch_loss, "train/lr": scheduler_lr, "epoch": epoch, "align_weight": current_align_weight})
 
         epoch_duration = time.time() - epoch_start_time
 
@@ -176,6 +175,7 @@ if __name__ == "__main__":
     for fold, test_video_id in enumerate(all_video_ids):
         fold_start_time = time.time()
 
+        # In LOO, test set is exactly one video
         test_ids = [test_video_id]
         train_ids = [vid for vid in all_video_ids if vid != test_video_id]
 
