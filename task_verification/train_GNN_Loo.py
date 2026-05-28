@@ -112,7 +112,9 @@ def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, g
             node_depths = batch["node_depths"].to(device)
             labels = batch["labels"].to(device)
 
-            smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
+            #removed label smoothing for FocalLoss, as it already incorporates a mechanism to handle class imbalance
+            #smoothed_labels = labels * (1.0 - label_smoothing) + (1.0 - labels) * label_smoothing
+            smoothed_labels = labels
 
             optimizer.zero_grad()
             logits, align_loss = model(vis_feat, text_feat, vis_mask, text_mask, edge_idx_list, node_depths)
