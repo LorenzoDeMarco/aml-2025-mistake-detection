@@ -13,6 +13,24 @@ import time
 from task_verification.dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
 from task_verification.GNN import TaskVerificationGNN
 
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        bce_loss = nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-bce_loss) # Probability of the correct class
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
 
 def set_seed(seed):
     torch.manual_seed(seed)
@@ -68,8 +86,13 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
         {'params': projector_params, 'lr': args['lr'] * 5.0}
     ], weight_decay=args['weight_decay'])
 
-    criterion = nn.BCEWithLogitsLoss(reduction='mean')
+    #replaced BCEWithLogitsLoss with FocalLoss to handle class imbalance more effectively
+    #criterion = nn.BCEWithLogitsLoss(reduction='mean')
     label_smoothing = 0.1
+
+    criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction='mean')
+
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
 
     print(f"    [Setup] Train : {len(train_ids)} video | Test : {len(test_ids)} video | Seed: {args['base_seed'] + fold_id}")
 
@@ -103,6 +126,7 @@ def train_logo_fold(fold_id, recipe_id, train_ids, test_ids, global_visual, glob
             optimizer.step()
             train_loss += classification_loss.item() * vis_feat.size(0)
 
+        scheduler.step()
         scheduler_lr = optimizer.param_groups[0]['lr']
         epoch_loss = train_loss / len(train_dataset)
         wandb.log({"train/loss": epoch_loss, "train/lr": scheduler_lr, "epoch": epoch, "align_weight": current_align_weight})
