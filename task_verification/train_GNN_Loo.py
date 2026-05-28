@@ -145,7 +145,7 @@ def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, g
 
 if __name__ == "__main__":
     hyperparameters = {
-        'visual_npz': 'step_embeddings_dataset.npz',
+        'visual_npz': 'step_embeddings.npz',
         'text_npz': 'text_task_graphs_v2.npz',
         'graph_zip': 'annotations/task_graphs',
         'annotations_json': 'annotations/annotation_json/complete_step_annotations.json',
