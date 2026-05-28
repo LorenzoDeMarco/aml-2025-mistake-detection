@@ -14,9 +14,29 @@ except ModuleNotFoundError:
     from dataset_GNN import TaskVerificationGraphDataset, graph_collate_fn
     from GNN import TaskVerificationGNN
 
+# --- NUOVA FOCAL LOSS ---
+class FocalLoss(nn.Module):
+    def __init__(self, alpha=0.25, gamma=2.0, reduction='mean'):
+        super(FocalLoss, self).__init__()
+        self.alpha = alpha
+        self.gamma = gamma
+        self.reduction = reduction
+
+    def forward(self, inputs, targets):
+        bce_loss = nn.functional.binary_cross_entropy_with_logits(inputs, targets, reduction='none')
+        pt = torch.exp(-bce_loss)
+        focal_loss = self.alpha * (1 - pt) ** self.gamma * bce_loss
+        
+        if self.reduction == 'mean':
+            return focal_loss.mean()
+        elif self.reduction == 'sum':
+            return focal_loss.sum()
+        return focal_loss
+
+
 def run_debug():
     args = {
-        'visual_npz':      'step_embeddings_dataset.npz',
+        'visual_npz':      'step_embeddings.npz',
         'text_npz':        'text_task_graphs_v2.npz',  
         'graph_zip':       'annotations/task_graphs',
         'annotations_json':'annotations/annotation_json/complete_step_annotations.json',
@@ -58,7 +78,6 @@ def run_debug():
     model = TaskVerificationGNN(dropout=args['dropout']).to(device)
     
     # --- ACCELERATORE: Differential Learning Rate ---
-    # Includiamo TUTTI i nuovi parametri SOTA (Positional Encoding, Logit Scale, Proiezioni)
     projector_params = []
     base_params = []
     fast_learning_keys = ['sim_visual_proj', 'sim_text_proj', 'logit_scale', 'step_positional_encoding']
@@ -74,18 +93,19 @@ def run_debug():
         {'params': projector_params, 'lr': args['lr'] * 5.0} 
     ], weight_decay=args['weight_decay'])
     
-    criterion = nn.BCEWithLogitsLoss(reduction='mean')
-    label_smoothing = 0.1
+    # --- SOSTITUZIONE BCE CON FOCAL LOSS E AGGIUNTA SCHEDULER ---
+    criterion = FocalLoss(alpha=0.25, gamma=2.0, reduction='mean')
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args['epochs'], eta_min=1e-6)
 
-    print("\nStarting Debug Training Loop (SOTA Architecture Check)...")
-    print("-" * 85)
-    print(f"{'Epoch':<6} | {'Tot Loss':<10} | {'Cls Loss':<10} | {'InfoNCE':<10} | {'AlgnWt':<6} | {'Separation (GT1 - GT0)'}")
-    print("-" * 85)
+    print("\nStarting Debug Training Loop (Focal Loss & Cosine Scheduler Check)...")
+    print("-" * 100)
+    print(f"{'Epoch':<6} | {'Tot Loss':<10} | {'Cls Loss':<10} | {'InfoNCE':<10} | {'AlgnWt':<6} | {'LR (Base)':<10} | {'Separation'}")
+    print("-" * 100)
 
     for epoch in range(1, args['epochs'] + 1):
         
-        # --- ACCELERATORE: Annealing del Peso dell'Allineamento ---
         current_align_weight = max(0.1, 1.0 * (0.8 ** (epoch - 1)))
+        current_lr = optimizer.param_groups[0]['lr']
         
         model.train()
         train_loss = 0.0
@@ -103,12 +123,12 @@ def run_debug():
             ei  = batch["edge_indices"]
             lbl = batch["labels"].to(device)
 
-            smoothed_labels = lbl * (1.0 - label_smoothing) + label_smoothing / 2.0
-
             optimizer.zero_grad()
             
             logits, align_loss = model(vis, txt, vm, tm, ei) 
-            classification_loss = criterion(logits, smoothed_labels)
+            
+            # --- APPLICAZIONE FOCAL LOSS PURA (Niente label smoothing) ---
+            classification_loss = criterion(logits, lbl.float())
             
             loss = classification_loss + current_align_weight * align_loss 
             
@@ -126,6 +146,9 @@ def run_debug():
                 epoch_probs.extend(probs)
                 epoch_gts.extend(lbl.cpu().numpy())
 
+        # Step dello scheduler alla fine di ogni epoca
+        scheduler.step()
+
         avg_loss = train_loss / len(train_dataset)
         avg_cls = total_cls_loss / len(train_dataset)
         avg_align = total_align_loss / len(train_dataset)
@@ -137,12 +160,12 @@ def run_debug():
         mean_prob_gt0 = epoch_probs[epoch_gts == 0].mean() if len(epoch_probs[epoch_gts == 0]) > 0 else 0
         live_sep = mean_prob_gt1 - mean_prob_gt0
 
-        print(f"{epoch:<6} | {avg_loss:<10.4f} | {avg_cls:<10.4f} | {avg_align:<10.4f} | {current_align_weight:<6.3f} | {live_sep:+.4f}")
+        print(f"{epoch:<6} | {avg_loss:<10.4f} | {avg_cls:<10.4f} | {avg_align:<10.4f} | {current_align_weight:<6.3f} | {current_lr:<10.6f} | {live_sep:+.4f}")
 
     # ==========================================
     # VALUTAZIONE FINALE SUL TRAINING (OVERFIT)
     # ==========================================
-    print("-" * 85)
+    print("-" * 100)
     model.eval()
     all_probs = []
     all_gts = []
@@ -166,18 +189,18 @@ def run_debug():
     sep = all_probs[all_gts==1].mean() - all_probs[all_gts==0].mean()
     acc = accuracy_score(all_gts, (all_probs >= 0.5).astype(int))
     
-    print("\n🔍 RISULTATI ANALISI OVERFITTING (SOTA ARCHITECTURE):")
+    print("\n🔍 RISULTATI ANALISI OVERFITTING (FOCAL LOSS + COSINE LR):")
     print(f"  Training Accuracy: {acc:.4f}")
     print(f"  Media Probabilità (Video Corretti, GT=0): {all_probs[all_gts==0].mean():.4f} ± {all_probs[all_gts==0].std():.4f}")
     print(f"  Media Probabilità (Video con Errore, GT=1): {all_probs[all_gts==1].mean():.4f} ± {all_probs[all_gts==1].std():.4f}")
     print(f"  Distanza di Separazione Finale: {sep:+.4f}")
 
     if sep > 0.10:
-        print("\n  🚀 ECCELLENTE: Il SOTA sta volando! Separazione forte e InfoNCE ottimizzata.")
+        print("\n  🚀 ECCELLENTE: Il modello overfitta perfettamente i dati! Focal Loss sta discriminando.")
     elif sep > 0.05:
-        print("\n  ✅ SUCCESSO: La Contrastive Loss con Hard Negative Mining funziona bene.")
+        print("\n  ✅ SUCCESSO: La distanza tra le classi è buona, lo scheduler aiuta la stabilità.")
     elif sep > 0.01:
-        print("\n  ⚠️ ALLERTA: Segnale debole. Possibile problema di tuning iniziale.")
+        print("\n  ⚠️ ALLERTA: Segnale debole. Possibile problema di tuning.")
     else:
         print("\n  ❌ FALLIMENTO: Collasso delle rappresentazioni. Il modello non converge.")
 
