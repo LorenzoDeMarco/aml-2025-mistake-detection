@@ -28,7 +28,7 @@ def create_gt_step_embeddings(json_path, feat_dir, output_file, fps=1.876):
 
     print(f"Processing videos...")
     for video_id, video_info in tqdm(gt_data.items()):
-        feat_path = os.path.join(feat_dir, f"{video_id}.npz")
+        feat_path = os.path.join(feat_dir, f"{video_id}_224_360p.mp4_1.875hz.npz")
         
         if not os.path.exists(feat_path):
             missing_videos.append(video_id)
