@@ -121,7 +121,8 @@ class NodeFusion(nn.Module):
         # x_sim in [0,1]: gate che decide quanto usare la visione
         # nodo non matchato → x_sim=0 → usa solo testo
         # nodo matchato bene → x_sim=0.9 → usa prevalentemente visione
-        alpha = x_sim.clamp(0.0, 1.0)          # (V, 1)
+        #alpha = x_sim.clamp(0.0, 1.0)  # (V, 1)
+        alpha=0.5     # forzo alpha= 0.5
         h = alpha * hv + (1.0 - alpha) * ht    # (V, hidden)
         return h
 
@@ -235,13 +236,19 @@ class GraphClassifier(nn.Module):
 
         self.final_norm = nn.LayerNorm(readout_dim)
 
+        #self.head = nn.Sequential(
+        #    nn.Dropout(p=dropout),
+         #   nn.Linear(readout_dim, hidden_dim),
+          #  nn.ReLU(),
+        #    nn.Dropout(p=dropout),
+        #    nn.Linear(hidden_dim, 1),
+        #)
+
         self.head = nn.Sequential(
             nn.Dropout(p=dropout),
-            nn.Linear(readout_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Dropout(p=dropout),
-            nn.Linear(hidden_dim, 1),
+            nn.Linear(readout_dim, 1)# directly to 1 output without hidden layer for better stability
         )
+
         self._init_weights()
 
     def _init_weights(self):
@@ -297,10 +304,10 @@ class GraphClassifier(nn.Module):
         target_mask = (out_degree == 0) # Nodi foglia (fine dei passaggi)
         source_mask = (in_degree == 0)  # Nodi radice (inizio dei passaggi)
 
-        fwd_max = global_max_pool(H_fwd_cat[target_mask], batch[target_mask], num_graphs)
+        fwd_max = global_max_pool(H_fwd_cat[target_mask], batch[target_mask], num_graphs) # take the peek and is better for finding error
         fwd_att = self.att_pool_fwd(H_fwd_cat[target_mask], batch[target_mask], num_graphs)
 
-        bwd_max = global_max_pool(H_bwd_cat[source_mask], batch[source_mask], num_graphs)
+        bwd_max = global_max_pool(H_bwd_cat[source_mask], batch[source_mask], num_graphs) # take the peek and is better for finding error
         bwd_att = self.att_pool_bwd(H_bwd_cat[source_mask], batch[source_mask], num_graphs)
 
         # Concatenazione globale delle scomposizioni strutturali
@@ -903,7 +910,10 @@ def run_cross_validation(dataset: GraphPTDataset, dim_text: int, dim_vis: int,
 
             print(f"Epoch {ep:03d} | Train loss: {tr_loss:.4f} | lr: {current_lr:.2e}")
 
-        probs, labels, logits, preds = get_probs(model, val_loader, device)
+        probs, labels, logits, _ = get_probs(model, val_loader, device)
+        val_threshold = find_optimal_threshold(probs, labels)
+        preds = (probs >= val_threshold).astype(int)
+        print(f"[FOLD {fold}] Validation threshold: {val_threshold:.4f}")
 
         all_oof_probs.append(probs)
         all_oof_preds.append(preds)
@@ -915,6 +925,7 @@ def run_cross_validation(dataset: GraphPTDataset, dim_text: int, dim_vis: int,
             'pred': preds,
             'prob': probs,
             'logits': logits,
+            'threshold': val_threshold,
             'train_loss_history': fold_train_losses,
         }
         torch.save(fold_metrics, metric_path)
@@ -934,9 +945,11 @@ def run_cross_validation(dataset: GraphPTDataset, dim_text: int, dim_vis: int,
     print_model_metrics(fold, oof_preds, oof_labels, oof_probs)
     compute_detailed_metrics(oof_labels, oof_preds)
 
-    print("\n--- GLOBAL PERFORMANCE (THRESHOLD 0.5) ---")
-    print_model_metrics("FINAL_0.5", oof_preds, oof_labels, oof_probs)
-    compute_detailed_metrics(oof_labels, oof_preds)
+    final_threshold = find_optimal_threshold(oof_probs, oof_labels)
+    final_preds = (oof_probs >= final_threshold).astype(int)
+    print(f"\n--- GLOBAL PERFORMANCE (THRESHOLD {final_threshold:.4f}) ---")
+    print_model_metrics("FINAL_OPTIMAL", final_preds, oof_labels, oof_probs)
+    compute_detailed_metrics(oof_labels, final_preds)
 
 
 def main():
