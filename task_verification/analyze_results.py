@@ -65,4 +65,4 @@ def analyze(csv_path):
     plt.show()
 
 if __name__ == "__main__":
-    analyze("logo_gnn_error_analysis.csv")
+    analyze("loo_gnn_error_analysis.csv")

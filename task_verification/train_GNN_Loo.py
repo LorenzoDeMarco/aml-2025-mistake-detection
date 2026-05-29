@@ -71,7 +71,7 @@ def train_loo_fold(fold_id, test_video_id, train_ids, test_ids, global_visual, g
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
         T_max=args['epochs'],
-        eta_min=1e-5
+        eta_min=1e-6
     )
 
     criterion = nn.BCEWithLogitsLoss(reduction='mean')
