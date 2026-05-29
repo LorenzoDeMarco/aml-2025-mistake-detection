@@ -84,7 +84,7 @@ def create_gt_step_embeddings(json_path, feat_dir, output_file, fps=1.876):
 
 if __name__ == "__main__":
     create_gt_step_embeddings(
-        json_path="complete_step_annotations.json",
+        json_path="annotations/annotation_json/complete_step_annotations.json",
         feat_dir="./data/egovlp_features",
         output_file="gt_step_embeddings.npz"
     )
