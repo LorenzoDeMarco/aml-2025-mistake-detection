@@ -49,7 +49,7 @@ def set_seed(seed=42):
 def main():
     set_seed(42)
 
-    npz_path = 'step_embeddings_dataset.npz'
+    npz_path = 'step_embeddings.npz'
     annotations_path = 'annotations/annotation_json/complete_step_annotations.json'
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
