@@ -318,29 +318,6 @@ class GraphClassifier(nn.Module):
         return logits
     
 
-class FocalLoss(nn.Module):
-    def __init__(self, alpha=0.7, gamma=2.0, reduction='mean', label_smoothing=0.0):
-        super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
-        self.label_smoothing = label_smoothing
-
-    def forward(self, logits, targets):
-        if self.label_smoothing > 0:# apply label smoothing
-            targets = targets * (1.0 - self.label_smoothing) + 0.5 * self.label_smoothing
-
-        p = torch.sigmoid(logits)
-        ce_loss = F.binary_cross_entropy_with_logits(logits, targets, reduction='none')
-        p_t = p * targets + (1 - p) * (1 - targets)
-        loss = ce_loss * ((1 - p_t) ** self.gamma)
-
-        if self.alpha >= 0:
-            alpha_t = self.alpha * targets + (1 - self.alpha) * (1 - targets)
-            loss = alpha_t * loss
-
-        return loss.mean() if self.reduction == 'mean' else loss.sum()
-
 
 def _torch_load(*args, **kwargs):
     kwargs.setdefault("weights_only", False)
@@ -544,14 +521,6 @@ def compute_topo_levels(edge_index: torch.Tensor, num_nodes: int) -> torch.Tenso
         
     return levels
 
-
-def global_mean_pool(x: torch.Tensor, batch: torch.Tensor, num_graphs: int) -> torch.Tensor:
-    dim = x.size(-1)
-    out = torch.zeros(num_graphs, dim, device=x.device, dtype=x.dtype).index_add(0, batch, x)
-    cnt = torch.zeros(num_graphs, device=x.device, dtype=x.dtype).index_add(
-        0, batch, torch.ones(batch.size(0), device=x.device, dtype=x.dtype)
-    )
-    return out / cnt.clamp(min=1.0).unsqueeze(-1)
 
 
 def global_max_pool(x: torch.Tensor, batch: torch.Tensor, num_graphs: int) -> torch.Tensor:
@@ -910,10 +879,7 @@ def run_cross_validation(dataset: GraphPTDataset, dim_text: int, dim_vis: int,
 
             print(f"Epoch {ep:03d} | Train loss: {tr_loss:.4f} | lr: {current_lr:.2e}")
 
-        probs, labels, logits, _ = get_probs(model, val_loader, device)
-        val_threshold = find_optimal_threshold(probs, labels)
-        preds = (probs >= val_threshold).astype(int)
-        print(f"[FOLD {fold}] Validation threshold: {val_threshold:.4f}")
+        probs, labels, logits, preds = get_probs(model, val_loader, device)
 
         all_oof_probs.append(probs)
         all_oof_preds.append(preds)
@@ -925,7 +891,6 @@ def run_cross_validation(dataset: GraphPTDataset, dim_text: int, dim_vis: int,
             'pred': preds,
             'prob': probs,
             'logits': logits,
-            'threshold': val_threshold,
             'train_loss_history': fold_train_losses,
         }
         torch.save(fold_metrics, metric_path)
