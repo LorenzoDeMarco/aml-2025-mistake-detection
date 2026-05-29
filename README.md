@@ -250,7 +250,7 @@ The processed output for each recipe ({recipe_id}.pt) contains a comprehensive s
 
 Command Used 
 ```
- python .\substep3_3\taskGraphEncoding.py --substep1_dir output_KFold_1s_step_embedding --task_graph_dir annotations/task_graphs --avg_csv annotations/annotation_csv/average_segment_length.csv --out_dir .\substep3_3\output_3_3 --text_batch_size 64 --sim_threshold 0.2
+  python .\task_verification\TaskGraphEncoding\taskGraphEncoding.py --substep1_dir .\multi_step_localization\output\output_Kfold_groundTruth\ --task_graph_dir annotations/task_graphs --avg_csv annotations/annotation_csv/average_segment_length.csv --out_dir .\task_verification\TaskGraphEncoding\output_3_3\ground_truth\ --text_batch_size 64 --sim_threshold 0.2
 ```
 
 
@@ -367,11 +367,11 @@ Result with optimal threshold
 
 | Metrics | Value |
 | :--- | :--- |
-| **Accuracy** | 0.512 |
-| **Precision** | 0.5112 |
-| **Recall** | 0.5014 |
-| **F1-Score** | 0.5112 |
-| **AUC (ROC)** | 0.5095 |
+| **Accuracy** | 0.4766 |
+| **Precision** | 0.4997 |
+| **Recall** | 0.4997 |
+| **F1-Score** | 0.4727 |
+| **AUC (ROC)** | 0.5249 |
 
 CLASS 'Correct' (0) - Precision: 0.5833, Recall: 0.5780
 CLASS 'Error'   (1) - Precision: 0.4390, Recall: 0.4444

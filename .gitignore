@@ -170,6 +170,14 @@ substep3_3/
 substep3_2/result
 substep3_2/result_1s
 
+task_verification/GNN/output_dir
+task_verification/TaskGraphEncoding/output_3_3
+task_verification/Transformer/result
+task_verification/Transformer/result_1s
+task_verification/Transformer/result_normal
+multi_step_localization/output
+
+
 results
 .vscode
 
