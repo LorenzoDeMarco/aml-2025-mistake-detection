@@ -1,0 +1,193 @@
+import os
+import json
+
+import numpy as np
+import torch
+from torch.utils.data import Dataset
+
+RECIPE_MAPPING = {
+    '1': 'microwaveeggsandwich.json', '2': 'dressedupmeatballs.json', '3': 'microwavemugpizza.json',
+    '4': 'ramen.json', '5': 'coffee.json', '7': 'breakfastburritos.json',
+    '8': 'spicedhotchocolate.json', '9': 'microwavefrenchtoast.json', '10': 'pinwheels.json',
+    '12': 'tomatomozzarellasalad.json', '13': 'buttercorncup.json', '15': 'tomatochutney.json',
+    '16': 'scrambledeggs.json', '17': 'cucumberraita.json', '18': 'zoodles.json',
+    '20': 'sautedmushrooms.json', '21': 'blenderbananapancakes.json', '22': 'herbomeletwithfriedtomatoes.json',
+    '23': 'broccolistirfry.json', '25': 'panfriedtofu.json', '26': 'mugcake.json',
+    '27': 'cheesepimiento.json', '28': 'spicytunaavocadowraps.json', '29': 'capresebruschetta.json'
+}
+
+class TaskVerificationGraphDataset(Dataset):
+    def __init__(self, preloaded_visual, preloaded_text, graph_zip_path, annotations_path, video_ids, split='train'):
+        self.split = split
+        
+        with open(annotations_path, 'r') as f:
+            self.annotations = json.load(f)
+            
+        self.visual_features = {}
+        self.text_features = {}
+        self.video_list = []
+        
+        for vid in video_ids:
+            if vid in preloaded_visual and vid in preloaded_text and vid in self.annotations:
+                self.visual_features[vid] = preloaded_visual[vid]
+                self.text_features[vid] = preloaded_text[vid]
+                self.video_list.append(vid)
+                
+        self.recipe_edges = {}
+        base_graph_dir = graph_zip_path if os.path.isdir(graph_zip_path) else 'task_graphs'
+        
+        self.recipe_valid_node_ids = {}
+        SKIP_TOKENS = {'START', 'END'}
+
+        for prefix, filename in RECIPE_MAPPING.items():
+            file_path = os.path.join(base_graph_dir, filename)
+            if os.path.exists(file_path):
+                with open(file_path, 'r') as f:
+                    data = json.load(f)
+                steps = data.get('steps', {})
+                # same logic as generate_text_features.py: order by node_id, filter START/END
+                node_ids_sorted = sorted(steps.keys(), key=lambda x: int(x))
+                valid_ids = [int(nid) for nid in node_ids_sorted if steps[nid] not in SKIP_TOKENS]
+                self.recipe_valid_node_ids[prefix] = valid_ids
+                self.recipe_edges[prefix] = data.get('edges', [])
+
+    def __len__(self):
+        return len(self.video_list)
+
+    def __getitem__(self, idx):
+        video_id = self.video_list[idx]
+        recipe_prefix = video_id.split("_")[0]
+
+        vis_feat = self.visual_features[video_id]  # [K, 768]
+        text_feat = self.text_features[video_id]   # [N, 256]
+        N = text_feat.shape[0]
+
+        # Map original node_id -> local index 0..N-1 in the task graph
+        # Valid nodes are those excluding START and END, ordered numerically
+        # Same logic used in generate_text_features.py
+        raw_edges = self.recipe_edges.get(recipe_prefix, [])
+
+        # Build the mapping: original node_id -> local index
+        # We need to know which node_ids are valid (excluding START/END)
+        # Use recipe_valid_node_ids loaded in __init__
+        valid_ids = self.recipe_valid_node_ids.get(recipe_prefix, [])
+
+        # valid_ids is an ordered list of original node_ids
+        # Example: [1, 2, 3, ..., N]
+        node_id_to_local = {nid: i for i, nid in enumerate(valid_ids)}
+
+        remapped_edges = []
+
+        for src, dst in raw_edges:
+            if src in node_id_to_local and dst in node_id_to_local:
+                remapped_edges.append([
+                    node_id_to_local[src],
+                    node_id_to_local[dst]
+                ])
+
+        if remapped_edges:
+            edge_index = torch.tensor(
+                remapped_edges,
+                dtype=torch.long
+            ).t().contiguous()
+        else:
+            edge_index = torch.empty((2, 0), dtype=torch.long)
+
+        # Label remains unchanged
+        has_error = any(
+            step.get("has_errors", False)
+            for step in self.annotations[video_id]["steps"]
+        )
+
+        label = 1.0 if has_error else 0.0
+
+        # Compute structural depth for each task graph node
+        remapped_edges_for_depth = [
+            (node_id_to_local[s], node_id_to_local[d])
+            for s, d in raw_edges
+            if s in node_id_to_local and d in node_id_to_local
+        ]
+
+        # Calculate depth of DAG
+        node_depths = compute_dag_depth(remapped_edges_for_depth, N)
+
+
+        return {
+            "video_id": video_id,
+            "visual_features": torch.tensor(vis_feat),
+            "text_features": torch.tensor(text_feat),
+            "edge_index": edge_index,
+            "label": torch.tensor(label, dtype=torch.float32),
+            "node_depths": torch.tensor(node_depths, dtype=torch.long)
+        }
+
+def graph_collate_fn(batch):
+    video_ids = [item["video_id"] for item in batch]
+    labels = torch.stack([item["label"] for item in batch])
+    edge_indices = [item["edge_index"] for item in batch]
+    
+    visual_tensors = [item["visual_features"] for item in batch]
+    max_vis_len = max(v.size(0) for v in visual_tensors)
+    visual_dim = visual_tensors[0].size(1)
+    
+    batched_visual = torch.zeros(len(batch), max_vis_len, visual_dim)
+    visual_mask = torch.zeros(len(batch), max_vis_len, dtype=torch.float32)
+    for i, v in enumerate(visual_tensors):
+        batched_visual[i, :v.size(0), :] = v
+        visual_mask[i, :v.size(0)] = 1.0
+        
+    text_tensors = [item["text_features"] for item in batch]
+    max_text_len = max(t.size(0) for t in text_tensors)
+    text_dim = text_tensors[0].size(1)
+    
+    batched_text = torch.zeros(len(batch), max_text_len, text_dim)
+    text_mask = torch.zeros(len(batch), max_text_len, dtype=torch.float32)
+    for i, t in enumerate(text_tensors):
+        batched_text[i, :t.size(0), :] = t
+        text_mask[i, :t.size(0)] = 1.0
+    
+    depth_tensors = [item["node_depths"] for item in batch]
+    batched_depths = torch.zeros(len(batch), max_text_len, dtype=torch.long)
+    for i, d in enumerate(depth_tensors):
+        batched_depths[i, :d.size(0)] = d
+        
+    return {
+        "video_ids": video_ids,
+        "visual_features": batched_visual,
+        "text_features": batched_text,
+        "visual_mask": visual_mask,
+        "text_mask": text_mask,
+        "edge_indices": edge_indices,
+        "labels": labels,
+        "node_depths": batched_depths  # [B, max_N]
+    }
+
+def compute_dag_depth(edge_list, N):
+    """
+    Computes the topological depth of each node in the DAG.
+    Depth = length of the longest path from any source node (in-degree=0).
+    Returns: np.array [N] of int depths, 0-indexed.
+    """
+    from collections import deque
+    
+    in_degree = [0] * N
+    children  = [[] for _ in range(N)]
+    
+    for src, dst in edge_list:
+        if 0 <= src < N and 0 <= dst < N:
+            children[src].append(dst)
+            in_degree[dst] += 1
+    
+    # BFS from all source nodes (in-degree = 0)
+    depth = [0] * N
+    queue = deque([i for i in range(N) if in_degree[i] == 0])
+    
+    while queue:
+        node = queue.popleft()
+        for child in children[node]:
+            depth[child] = max(depth[child], depth[node] + 1)
+            in_degree[child] -= 1
+            if in_degree[child] == 0:
+                queue.append(child)
+    
+    return np.array(depth, dtype=np.int64)
