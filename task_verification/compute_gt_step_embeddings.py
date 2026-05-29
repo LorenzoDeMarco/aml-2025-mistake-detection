@@ -86,5 +86,5 @@ if __name__ == "__main__":
     create_gt_step_embeddings(
         json_path="complete_step_annotations.json",
         feat_dir="./data/egovlp_features",
-        output_file="gt_step_embeddings_dataset.npz"
+        output_file="gt_step_embeddings.npz"
     )
