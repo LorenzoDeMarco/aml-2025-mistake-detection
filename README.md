@@ -446,17 +446,18 @@ The finalized model successfully overcomes this limitation. Out of 384 test iter
 
 
 
-### 5.2 Post-Hoc Threshold Calibration
+### 6.2 Post-Hoc Threshold Calibration
 While the symmetric Binary Cross-Entropy (BCE) loss aligns the natural mathematical center at $0.50$, the injection of **0.1 Label Smoothing** alters the logit dynamics. By converting hard binary targets into soft boundaries $[0.1, 0.9]$, label smoothing prevents the network from generating overconfident, extreme probabilities, contracting the entire prediction landscape toward a narrower central band. 
 
-When optimizing the model for a deployment scenario where missing a procedural mistake carries a high cost (requiring high-sensitivity anomaly detection), a post-hoc threshold calibration becomes highly effective. Shifting the decision boundary down to $\tau = 0.30$ adapts the model to the smoothed probability space, yielding the following operational profile:
+To verify the model's natural operating point, the optimal decision boundary is located via Youden's J statistic. The ROC-optimal threshold is $\tau^* = 0.5068$ — effectively coincident with the default $0.50$ — indicating that the BCE objective already centers the decision boundary appropriately for this model. Recalibration therefore yields only a marginal shift:
 
-* **Calibrated Accuracy:** 0.62500
-* **Calibrated F1-Score:** **0.72830** (a +3.98% improvement)
-* **Calibrated Recall:** **0.89091** (a +17.27% improvement)
-* **Calibrated Confusion Matrix:** `TP = 196 | TN = 43 | FP = 121 | FN = 24`
+* **Calibrated Accuracy:** 0.63021 (vs. 0.62760)
+* **Calibrated F1-Score:** 0.68996 (vs. 0.68845)
+* **Calibrated Precision:** 0.66387
+* **Calibrated Recall:** 0.71818 (unchanged)
+* **Calibrated Confusion Matrix:** `TP = 158 | TN = 84 | FP = 80 | FN = 62`
 
-By operating at $\tau = 0.30$, the network successfully captures **196 out of 220 real procedural errors**, offering a highly robust safety-net baseline at a minimal cost to global accuracy.
+The negligible movement — a single correct video reclassified from a false positive to a true negative — confirms that the Transformer's logit distribution is naturally well-centered. This contrasts with the GNN, whose label-smoothing-induced probability contraction pushes its optimal threshold noticeably away from $0.50$ (see §1).
 
 ---
 
@@ -491,11 +492,11 @@ A disaggregated, recipe-by-recipe diagnostic assessment of the 384 cross-validat
 |-----------|---------------|---------------------|------------------|----|----|----|----|----------|
 | 01        | 18            | 13                  | 13               | 11 | 3  | 2  | 2  | 77.78%   |
 | 04        | 17            | 7                   | 10               | 5  | 5  | 5  | 2  | 58.82%   |
-| 08        | 16            | 10                  | 15               | 6  | 1  | 9  | 4  | 43.75%   |
-| 18        | 15            | 9                   | 10               | 8  | 4  | 2  | 1  | 80.00%   |
-| 20        | 14            | 8                   | 10               | 7  | 4  | 3  | 1  | 78.57%   |
-| 23        | 16            | 9                   | 14               | 7  | 2  | 7  | 2  | 56.25%   |
-| 26        | 17            | 10                  | 11               | 8  | 6  | 3  | 2  | 82.35%   |
+| 08        | 16            | 10                  | 9                | 5  | 2  | 4  | 5  | 43.75%   |
+| 18        | 15            | 11                  | 12               | 10 | 2  | 2  | 1  | 80.00%   |
+| 20        | 14            | 8                   | 9                | 7  | 4  | 2  | 1  | 78.57%   |
+| 23        | 16            | 6                   | 10               | 3  | 3  | 7  | 3  | 37.50%   |
+| 26        | 17            | 10                  | 9                | 8  | 6  | 1  | 2  | 82.35%   |
 
 ### 7.1 The Cross-Task Semantic Inversion Phenomenon
 The catastrophic drop in accuracy observed in Recipes 23, 25, 09, and 08 is driven by **Cross-Task Semantic Interference**. A puristic temporal Transformer treats visual video embeddings as a linear, unconstrained string of feature events. It learns to correlate specific visual movements, hand trajectories, or tool manipulations with the presence of an error based entirely on the global statistical frequency of those patterns across the training pool. 
@@ -978,16 +979,16 @@ Both models degrade from LOO to LOGO, as expected, but the GNN degrades *less* i
 
 To compare the two models' decision behavior on the *full* dataset under identical conditions, we examine the LOO confusion matrices, each reported at its own ROC-optimal (Youden's J) operating point:
 
-| | Transformer (LOO, $\tau^*=0.30$) | GNN (LOO, $\tau^*=0.64$) |
+| | Transformer (LOO, $\tau^*=0.51$) | GNN (LOO, $\tau^*=0.64$) |
 |---|---|---|
-| True Negatives (TN) | 80 | **97** (+17) |
-| False Positives (FP) | 84 | **67** (−17) |
-| True Positives (TP) | **164** | 143 (−21) |
-| False Negatives (FN) | **56** | 77 (+21) |
+| True Negatives (TN) | 84 | **97** (+13) |
+| False Positives (FP) | 80 | **67** (−13) |
+| True Positives (TP) | **158** | 143 (−15) |
+| False Negatives (FN) | **62** | 77 (+15) |
 
-The two models occupy clearly different operating regimes. The GNN correctly accepts **97 of 164 correct executions** (59.1% specificity) versus the Transformer's 80 (48.8%), and raises **17 fewer false alarms**. This is architecturally meaningful: the GNN's topological validation requires positive evidence from the DAG structure before flagging an error, making it harder to trigger false positives from superficial visual similarity alone.
+The two models occupy clearly different operating regimes. The GNN correctly accepts **97 of 164 correct executions** (59.1% specificity) versus the Transformer's 84 (51.2%), and raises **13 fewer false alarms**. This is architecturally meaningful: the GNN's topological validation requires positive evidence from the DAG structure before flagging an error, making it harder to trigger false positives from superficial visual similarity alone.
 
-The Transformer, by contrast, sits at a recall-biased operating point. Its ROC-optimal threshold is pushed down to $\tau = 0.30$, and even there it predicts **248 Errors vs 136 Correct** — far more skewed toward the positive class than the ground-truth split (220/164), a residual signature of the majority-class pressure documented in the baseline section. The GNN at its optimal $\tau = 0.64$ predicts **210 Errors vs 174 Correct**, much closer to the true distribution, recovering balance without collapsing onto the majority class.
+The Transformer's ROC-optimal threshold sits at $\tau^* \approx 0.51$ — essentially the default boundary — and at this point it predicts **238 Errors vs 146 Correct**, leaning toward the positive class relative to the ground-truth split (220/164). The GNN at its optimal $\tau = 0.64$ predicts **210 Errors vs 174 Correct**, closer to the true distribution while accepting more correct executions. The Transformer's higher true-positive count (158 vs 143) reflects its higher recall operating point, but it comes at the cost of specificity.
 
 The threshold-independent summary is the AUROC gap, **+0.018 in favor of the GNN under LOO** (0.64703 vs 0.62862), reflecting genuine probabilistic discrimination rather than a thresholding artifact. The discriminative quality is further characterized per-recipe under LOGO in §3, where per-recipe probability separation correlates with per-recipe AUROC at **r = 0.944**.
 
@@ -1167,7 +1168,7 @@ Under perfect segmentation, the **Transformer wins decisively (AUROC 0.79 vs 0.7
 
 This study establishes a single, layered empirical claim about procedural mistake detection in egocentric video: **graph-based modeling is not merely an alternative to sequence modeling — it is a requirement for robustness once perception is imperfect, which is the only setting that matters in practice.**
 
-**The matched comparison favors the GNN.** Under identical cross-validation protocols on the real pipeline, the GNN outperforms the Transformer on both LOO (AUROC 0.64703 vs 0.62862, +0.018) and LOGO (0.62395 vs 0.60260, +0.021), with consistent gains in F1 and recall. The GNN's *harder* LOGO result essentially matches the Transformer's *easier* LOO result, meaning the topological prior compensates almost entirely for the loss of recipe-specific memorization. The escape from majority-class collapse is visible in the LOO confusion matrices: at its optimal operating point the GNN predicts 210 Errors vs 174 Correct (close to the 220/164 ground truth), while the Transformer, even at $\tau = 0.30$, remains recall-biased at 248 vs 136. Per-recipe, probability separation correlates with AUROC at **r = 0.944**, confirming genuine discriminative signal rather than distributional accident.
+**The matched comparison favors the GNN.** Under identical cross-validation protocols on the real pipeline, the GNN outperforms the Transformer on both LOO (AUROC 0.64703 vs 0.62862, +0.018) and LOGO (0.62395 vs 0.60260, +0.021), with consistent gains in F1 and recall. The GNN's *harder* LOGO result essentially matches the Transformer's *easier* LOO result, meaning the topological prior compensates almost entirely for the loss of recipe-specific memorization. The escape from majority-class collapse is visible in the LOO confusion matrices: at its optimal operating point the GNN predicts 210 Errors vs 174 Correct (close to the 220/164 ground truth) while accepting more correct executions, whereas the Transformer at its optimal threshold ($\tau^*\approx0.51$) predicts 238 vs 146, leaning further toward the positive class. Per-recipe, probability separation correlates with AUROC at **r = 0.944**, confirming genuine discriminative signal rather than distributional accident.
 
 **The localization stage is the dominant constraint.** A recall-agnostic NMS analysis shows that even the best aggressive filter (Top 40) physically loses 47.8% of real actions, and tightening to Top 20 loses ~62%. Late filtering (~400 proposals) is therefore not a quirk but a necessity: it preserves near-complete recall-agnostic coverage and shifts disambiguation onto the cross-modal matching module. The ~400-vs-~40 experiment confirms this directly — both models degrade when nodes are removed, and the GNN's 0.624 AUROC is only attainable in the high-coverage regime, where its matching module can recover true features buried in noise.
 
