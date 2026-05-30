@@ -572,16 +572,16 @@ def eval_epoch(model: nn.Module, loader, device: torch.device) -> Dict[str, floa
     f1 = 2 * prec * rec / max(1e-12, prec + rec)
 
     roc_auc_score, average_precision_score = try_import_sklearn_auc()
-    auc = float("nan")
+    auroc = float("nan")
     pr_auc = float("nan")
     if roc_auc_score is not None:
         try:
-            auc = float(roc_auc_score(y.numpy(), prob.numpy()))
+            auroc = float(roc_auc_score(y.numpy(), prob.numpy()))
             pr_auc = float(average_precision_score(y.numpy(), prob.numpy()))
         except Exception:
             pass
 
-    return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "auc": auc, "pr_auc": pr_auc}
+    return {"accuracy": acc, "precision": prec, "recall": rec, "f1": f1, "auc": auroc, "auroc": auroc, "pr_auc": pr_auc}
 
 
 def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, grad_clip: float,
@@ -591,7 +591,7 @@ def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, g
     total_n = 0
 
     #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    #criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([1.2]).to(device)) # Peso leggermente più alto per la classe positiva (errori) per bilanciare meglio il dataset sbilanciato
+    #criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([0.9]).to(device)) # Peso leggermente più alto per la classe positiva (errori) per bilanciare meglio il dataset sbilanciato
     criterion= nn.BCEWithLogitsLoss()
 
 
@@ -645,16 +645,16 @@ def print_model_metrics(fold, oof_preds, oof_labels, oof_probs):
     f1 = f1_score(np_true, np_pred, average='macro')
 
     try:
-        auc = roc_auc_score(np_true, np_probs)
+        auroc = roc_auc_score(np_true, np_probs)
     except ValueError:
-        auc = 0.5  # Default if only one class is present in the fold
+        auroc = 0.5  # Default if only one class is present in the fold
 
     if WANDB_AVAILABLE:
         try:
             wandb.log({
                 "Model_accuracy": acc,
                 "Macro_F1": f1,
-                "AUC": auc
+                "AUROC": auroc
             })
         except Exception:
             pass
@@ -667,7 +667,7 @@ def print_model_metrics(fold, oof_preds, oof_labels, oof_probs):
     print(f"PROCESSED GRAPHS: {total_count}")
     print(f"ACCURACY:  {acc:.4f}")
     print(f"MACRO F1:  {f1:.4f}")
-    print(f"AUC:       {auc:.4f}")
+    print(f"AUROC:     {auroc:.4f}")
     print(f"PRED DIST: {np.bincount(np_pred)}")
     print(f"CONFUSION: TP classe 1 ={tp}, TN classe 0 ={tn}, FP={fp}, FN={fn}")
     print("----------------------------------------\n")
@@ -1165,7 +1165,7 @@ def main():
             compute_detailed_metrics(test_labels, test_preds)
         return
 
-    best_key = "auc"
+    best_key = "auroc"
     best_score = -1e9
     epochs_without_improvement = 0
 
@@ -1230,7 +1230,7 @@ def main():
         compute_detailed_metrics(test_labels, test_preds)
         if use_wandb:
             wandb.log({"test/threshold": use_threshold})
-            wandb.summary.update({f"test/{k}": v for k, v in dict(accuracy=accuracy_score(test_labels, test_preds), precision=precision_score(test_labels, test_preds, zero_division=0), recall=recall_score(test_labels, test_preds), f1=f1_score(test_labels, test_preds), auc=roc_auc_score(test_labels, test_probs)).items()})
+            wandb.summary.update({f"test/{k}": v for k, v in dict(accuracy=accuracy_score(test_labels, test_preds), precision=precision_score(test_labels, test_preds, zero_division=0), recall=recall_score(test_labels, test_preds), f1=f1_score(test_labels, test_preds), auroc=roc_auc_score(test_labels, test_probs)).items()})
 
     if use_wandb:
         wandb.finish()
