@@ -238,7 +238,6 @@ Instead of discarding overlapping segments, they are preserved to provide the Su
 During embedding generation, the following filters are applied to ensure a high signal-to-noise ratio:
 
 - **Confidence Thresholding** (τ ≥ 0.05): Predictions below this score are discarded to eliminate low-probability background noise.
-- **Top-K Constraining** (K = 100): Only the top 100 highest-scoring predictions per video are retained to optimize memory and sequence length.
 - **Chronological Sorting**: Retained segments are re-ordered by `start_time` to reconstruct the logical flow of the procedure.
 
 ### Feature Aggregation — Temporal Average Pooling
