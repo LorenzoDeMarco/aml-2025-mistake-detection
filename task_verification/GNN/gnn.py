@@ -590,9 +590,9 @@ def train_one_epoch(model: nn.Module, loader, device: torch.device, optimizer, g
     total_loss = 0.0
     total_n = 0
 
-    criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    #criterion = nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     #criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([1.2]).to(device)) # Peso leggermente più alto per la classe positiva (errori) per bilanciare meglio il dataset sbilanciato
-    #criterion= nn.BCEWithLogitsLoss()
+    criterion= nn.BCEWithLogitsLoss()
 
 
     for batch in loader:

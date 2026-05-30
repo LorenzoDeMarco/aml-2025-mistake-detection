@@ -1,5 +1,6 @@
 from pathlib import Path
 import numpy as np
+import random
 from typing import Dict
 import argparse
 import json
@@ -177,13 +178,19 @@ def build_optimizer(model: nn.Module, hparams: dict) -> torch.optim.Optimizer:
         raise ValueError(f"Ottimizzatore non supportato: '{name}'. Scegli tra 'adam' e 'adamw'.")
 
 
-def Transform_fold(train_data, test_data, label_dict, hparams, fold_idx: int, use_wandb: bool):
-
-    seed = 42
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+def set_seed(seed: int):
+    """Imposta i seed per numpy, random e torch in modo riproducibile."""
+    random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
+    try:
+        torch.cuda.manual_seed_all(seed)
+    except Exception:
+        pass
 
+
+def Transform_fold(train_data, test_data, label_dict, hparams, fold_idx: int, use_wandb: bool):
+    # NOTE: seed setting moved outside; function assumes global seed already set
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     train_ds = RecipeDataset(train_data, label_dict)
@@ -323,16 +330,20 @@ def main():
 
     hyperparameters = {
        'input_dim':    1024,
-        'model_dim':    256,
+        'model_dim':    128,
         'num_heads':    4,
         'num_layers':   1,
-        'dropout':      0.1,
+        'dropout':      0.2,
         'lr':           2e-4,
         'epochs':       10,
         'batch_size':   4,
         'optimizer':    args.optimizer,
         'weight_decay': args.weight_decay,
+        'seed':         42,
     }
+
+    # Imposta seed globale una sola volta all'inizio
+    set_seed(hyperparameters.get('seed', 42))
 
 
 
