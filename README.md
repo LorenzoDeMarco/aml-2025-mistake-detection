@@ -365,7 +365,7 @@ The finalized model architecture is structured inside `task_verification/transfo
 6. **MLP Classification Head:** The output corresponding to index 0 (the `[CLS]` token) is extracted and passed through a robust non-linear MLP head: `Linear(256 -> 128) -> ReLU -> Dropout(0.2) -> Linear(128 -> 1)` to generate the final decision logit.
 
 ### Mask Compression and Alignment Logic
-To ensure that padding regions are not processed during multi-head self-attention, a corresponding boolean mask reduction is performed. The mask is downsampled using a 1D Max Pooling operation (`F.max_pool1d(mask, kernel_size=4, stride=2)`) to mirror the shape changes caused by the Conv1D layer. Any minor shape mismatches stemming from integer division rounding are resolved via dynamic alignment (slicing or zero-padding). Finally, a valid token prefix (`1.0`) is added to ensure that the `[CLS]` token position is never masked during self-attention computation.
+To ensure that padding regions are not processed during multi-head self-attention, a corresponding boolean mask reduction is performed. The mask is downsampled using a 1D Max Pooling operation (`F.max_pool1d(mask, kernel_size=4, stride=4)`) to mirror the shape changes caused by the Conv1D layer. Any minor shape mismatches stemming from integer division rounding are resolved via dynamic alignment (slicing or zero-padding). Finally, a valid token prefix (`1.0`) is added to ensure that the `[CLS]` token position is never masked during self-attention computation.
 
 ---
 

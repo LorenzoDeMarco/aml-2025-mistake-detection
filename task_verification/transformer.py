@@ -10,7 +10,7 @@ class TaskVerificationTransformer(nn.Module):
         # linear projection
         self.input_proj = nn.Linear(input_dim, embed_dim)
         
-        # stride-2 Conv1D to downsample time dimension by 2
+        # stride-4 Conv1D to downsample time dimension by 4
         self.temporal_downsample = nn.Conv1d(
             in_channels=embed_dim, 
             out_channels=embed_dim, 
