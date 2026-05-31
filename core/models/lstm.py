@@ -25,7 +25,7 @@ class LSTMModel(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(self.hidden_dim * 2, self.hidden_dim),
             nn.ReLU(),
-            nn.Dropout(config.lstm_dropout),
+            nn.Dropout(0.3),
             nn.Linear(self.hidden_dim, 1) ## Binary output for each frame
         )
     def forward(self, x):
