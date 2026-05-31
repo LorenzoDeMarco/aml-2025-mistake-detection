@@ -861,7 +861,7 @@ The performance improvements over the Transformer baseline are not incidental �
 | `hidden_dim` | 256 | Shared latent space dimensionality |
 | `dropout` | 0.4 | Aggressive regularization against recipe memorization |
 | `batch_size` | 16 | Constrained by graph batching memory requirements |
-| `epochs` | 45 | Sufficient for convergence under annealed alignment weight |
+| `epochs` | 50 | Sufficient for convergence under annealed alignment weight |
 | `lr` (base) | `2e-4` | Stable update rate for GNN, fusion MLP, depth embeddings, `step_positional_encoding`, classification head |
 | `lr` (projectors) | `1e-3` | 5× higher for `sim_visual_proj`, `sim_text_proj`, `logit_scale` — rapid alignment convergence |
 | `weight_decay` | `1e-2` | L2 regularization against parameter expansion |
