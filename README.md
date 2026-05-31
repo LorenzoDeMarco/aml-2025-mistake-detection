@@ -231,7 +231,7 @@ Transform localized segments into unique step-level embeddings:
 python compute_step_embeddings.py
 ```
 
-Output: `step_embeddings.npz`
+Output: `step_embeddings_dataset.npz`
 
 ---
 
@@ -1258,7 +1258,7 @@ Transform localized segments into unique step-level embeddings:
 python compute_step_embeddings.py
 ```
 
-Output: `step_embeddings.npz`
+Output: `step_embeddings_dataset.npz`
 
 ---
 

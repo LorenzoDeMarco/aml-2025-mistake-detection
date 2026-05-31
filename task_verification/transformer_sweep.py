@@ -19,8 +19,8 @@ def train_sweep():
         with open('annotations/data_splits/recordings_data_split_combined.json', 'r') as f:
             split = json.load(f)
 
-        train_ds = TaskVerificationDataset('step_embeddings.npz', 'annotations/annotation_json/complete_step_annotations.json', split['train'], split='train')
-        val_ds = TaskVerificationDataset('step_embeddings.npz', 'annotations/annotation_json/complete_step_annotations.json', split['val'], split='val')
+        train_ds = TaskVerificationDataset('step_embeddings_dataset.npz', 'annotations/annotation_json/complete_step_annotations.json', split['train'], split='train')
+        val_ds = TaskVerificationDataset('step_embeddings_dataset.npz', 'annotations/annotation_json/complete_step_annotations.json', split['val'], split='val')
         
         train_loader = DataLoader(train_ds, batch_size=c.batch_size, shuffle=True)
         val_loader = DataLoader(val_ds, batch_size=c.batch_size)

@@ -232,4 +232,4 @@ def train_loo(npz_path, annotations_path):
     final_run.finish()
 
 if __name__ == "__main__":
-    train_loo('step_embeddings.npz', 'annotations/annotation_json/complete_step_annotations.json')
+    train_loo('step_embeddings_dataset.npz', 'annotations/annotation_json/complete_step_annotations.json')
