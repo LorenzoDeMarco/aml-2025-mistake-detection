@@ -5,21 +5,28 @@ from core.models.blocks import fetch_input_dim
 
 
 class LSTMModel(nn.Module):
-    def __init__(self, input_dim, hidden_dim=256, num_layers=1, dropout=0.3):
-        super(LSTMModel, self).__init__()
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        input_dim = fetch_input_dim(config)
+
+        self.hidden_dim = getattr(config, 'hidden_dim', 256)
+        self.num_layers = getattr(config, 'num_layers', 1)
+
         #bidirectional = True => double the outgoing hidden_dim
         self.lstm = nn.LSTM(input_size=input_dim, 
-                            hidden_size=hidden_dim, 
-                            num_layers=num_layers, 
+                            hidden_size=self.hidden_dim, 
+                            num_layers=self.num_layers, 
                             batch_first=True, 
                             bidirectional=True, 
-                            dropout=dropout if num_layers > 1 else 0.0)
+                            dropout=0.3 if self.num_layers > 1 else 0)
+        
         #classifier takes 2 * hidden_dim due to bidirectionality
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_dim * 2, hidden_dim),
+            nn.Linear(self.hidden_dim * 2, self.hidden_dim),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, 1) ## Binary output for each frame
+            nn.Dropout(config.lstm_dropout),
+            nn.Linear(self.hidden_dim, 1) ## Binary output for each frame
         )
     def forward(self, x):
         # x shape: (Batch=1, Seq_Len=N, Features=D)

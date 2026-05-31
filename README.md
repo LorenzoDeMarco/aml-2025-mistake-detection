@@ -566,7 +566,7 @@ Unlike sinusoidal encodings, using a learnable embedding allows the model to ada
 
 ### 4.2 Bipartite Matching via the Hungarian Algorithm
 
-Within the shared latent space, we compute a cosine similarity matrix $S \in \mathbb{R}^{N_{vis} \times N_{text}}$ between the positionally-encoded projected visual features and textual node embeddings:
+Within the shared latent space, we compute a cosine similarity matrix $S \in \mathbb{R}^{N_{vis} \times N_{text}}$ between the projected visual features and the positionally-encoded textual node embeddings​:
 
 $$
 S_{ij} = \frac{\tilde{v}_i \cdot \tilde{t}_j}{\|\tilde{v}_i\| \cdot \|\tilde{t}_j\|}
