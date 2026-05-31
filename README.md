@@ -362,7 +362,7 @@ The finalized model architecture is structured inside `task_verification/transfo
 3. **`[CLS]` Token Prepending:** A learnable parameters tensor (`torch.zeros(1, 1, embed_dim)`) initialized with a standard deviation of $0.02$ is prepended to the feature sequence, expanding the tensor shape to `[B, T_new + 1, embed_dim]`.
 4. **Parametric Positional Encoding:** Sinusoidal positional encodings are injected across the sequence. The maximum sequence length is dynamically bounded to `(max_seq_len // 2) + 50` to account for the stride-2 compression safely.
 5. **Transformer Encoder Layer with Pre-LN:** A 2-layer Transformer Encoder utilizes Pre-Layer Normalization (`norm_first=True`). Applying normalization *before* the multi-head self-attention and feed-forward sub-layers guarantees deep gradient stability and smooth loss propagation.
-6. **MLP Classification Head:** The output corresponding to index 0 (the `[CLS]` token) is extracted and passed through a robust non-linear MLP head: `Linear(256 -> 128) -> ReLU -> Dropout(0.2) -> Linear(128 -> 1)` to generate the final decision logit.
+6. **MLP Classification Head:** The output corresponding to index 0 (the `[CLS]` token) is extracted and passed through a robust non-linear MLP head: `Linear(256 -> 128) -> ReLU -> Dropout(0.4) -> Linear(128 -> 1)` to generate the final decision logit.
 
 ### Mask Compression and Alignment Logic
 To ensure that padding regions are not processed during multi-head self-attention, a corresponding boolean mask reduction is performed. The mask is downsampled using a 1D Max Pooling operation (`F.max_pool1d(mask, kernel_size=4, stride=4)`) to mirror the shape changes caused by the Conv1D layer. Any minor shape mismatches stemming from integer division rounding are resolved via dynamic alignment (slicing or zero-padding). Finally, a valid token prefix (`1.0`) is added to ensure that the `[CLS]` token position is never masked during self-attention computation.
@@ -557,7 +557,7 @@ The use of GELU activations and Layer Normalization — rather than simple linea
 Before computing the similarity matrix, a crucial **Sequential Positional Encoding** step is applied to the projected text features. A learnable embedding table maps each step index $i \in \{0, 1, \ldots, N-1\}$ to a 256-dimensional positional vector, which is additively injected into the projected text representation:
 
 $$
-\tilde{t}_i = \text{proj\_text}(t_i) + \text{PE}(i)
+\tilde{t}_i = \text{proj}_{\text{text}}(t_i) + \text{PE}(i)
 $$
 
 This design choice addresses a fundamental weakness of pure cosine-similarity-based matching: without positional information, two task graph nodes with visually similar descriptions (e.g., *"add the ingredient"* appearing at step 2 and step 7) are indistinguishable during the Hungarian assignment. The Sequential PE breaks this symmetry by encoding the *chronological order* of each step, biasing the similarity matrix toward temporally coherent alignments and preventing the algorithm from confusing procedurally distant steps that share superficial visual similarity.
@@ -740,7 +740,7 @@ PyTorch Geometric operates on sparse, flat graph representations. Since the data
 3. Offsetting the edge index tensor by the cumulative node count `node_offset` to produce globally unique node indices across the batch.
 4. Appending a batch assignment vector `batch_flat` mapping each node to its sample index $b$.
 
-The result is a single set of flat tensors $(X_{\text{flat}}, \text{edge\_index\_flat}, \text{batch\_flat})$ representing all B graphs as one large disconnected graph — the standard PyG batching convention — ready for efficient sparse message passing.
+The result is a single set of flat tensors $(X_{\text{flat}},\ \text{edge\_index}_{\text{flat}},\ \text{batch}_{\text{flat}})$ representing all B graphs as one large disconnected graph — the standard PyG batching convention — ready for efficient sparse message passing.
 
 ### 3.2 Why GraphConv over GCNConv
 
