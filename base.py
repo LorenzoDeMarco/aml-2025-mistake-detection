@@ -14,7 +14,8 @@ from sklearn.metrics import precision_score, recall_score, f1_score, roc_auc_sco
 from torcheval.metrics.functional import binary_auprc
 from tqdm import tqdm
 
-from core.models.blocks import fetch_input_dim, MLP, ErrorRecognitionLSTM
+from core.models.blocks import fetch_input_dim, MLP
+from core.models.lstm import LSTMModel
 from core.models.er_former import ErFormer
 from dataloader.CaptainCookStepDataset import collate_fn, CaptainCookStepDataset
 from dataloader.CaptainCookSubStepDataset import CaptainCookSubStepDataset
@@ -51,10 +52,9 @@ def fetch_model(config):
     elif config.variant == const.TRANSFORMER_VARIANT:
         if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
             model = ErFormer(config)
-    elif config.variant == "LSTM": 
+    elif config.variant == const.LSTM_VARIANT:
         if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
-            input_dim = fetch_input_dim(config)
-            model = ErrorRecognitionLSTM(input_dim=input_dim, hidden_dim=256)
+            model = LSTMModel(config)
     assert model is not None, f"Model not found for variant: {config.variant} and backbone: {config.backbone}"
     model.to(config.device)
     return model
@@ -160,7 +160,7 @@ def train_model_base(train_loader, val_loader, config, test_loader=None):
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([2.5], dtype=torch.float32).to(device))
     scheduler = ReduceLROnPlateau(
         optimizer, mode='max',
-        factor=0.1, patience=5, verbose=True,
+        factor=0.1, patience=5,
         threshold=1e-4, threshold_mode="abs", min_lr=1e-7
     )
     # criterion = nn.BCEWithLogitsLoss()
