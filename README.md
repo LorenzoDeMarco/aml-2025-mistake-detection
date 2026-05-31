@@ -740,7 +740,7 @@ PyTorch Geometric operates on sparse, flat graph representations. Since the data
 3. Offsetting the edge index tensor by the cumulative node count `node_offset` to produce globally unique node indices across the batch.
 4. Appending a batch assignment vector `batch_flat` mapping each node to its sample index $b$.
 
-The result is a single set of flat tensors $(X_{\text{flat}},\ \text{edge}_{\text{index\_flat}},\ \text{batch}_{\text{flat}})$ representing all B graphs as one large disconnected graph — the standard PyG batching convention — ready for efficient sparse message passing.
+The result is a single set of flat tensors $(X_{\mathrm{flat}},\ \mathtt{edge\_index\_flat},\ \mathtt{batch\_flat})$ representing all B graphs as one large disconnected graph — the standard PyG batching convention — ready for efficient sparse message passing.
 
 ### 3.2 Why GraphConv over GCNConv
 
