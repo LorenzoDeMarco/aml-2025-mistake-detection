@@ -231,7 +231,7 @@ Transform localized segments into unique step-level embeddings:
 python compute_step_embeddings.py
 ```
 
-Output: `step_embeddings_dataset.npz`
+Output: `step_embeddings.npz`
 
 ---
 
@@ -1193,3 +1193,100 @@ This project builds on many repositories from the CaptainCook4D release. Please 
 **Error Recognition**: https://github.com/CaptainCook4D/error_recognition
 
 **Features Extraction**: https://github.com/CaptainCook4D/feature_extractors
+
+
+## Usage
+### Step2: LSTM baseline
+
+```
+python -m core.evaluate --variant MLP --backbone omnivore --ckpt checkpoints/error_recognition_best/MLP/omnivore/error_recognition_MLP_omnivore_step_epoch_43.pt --split step --threshold 0.6
+
+python -m core.evaluate --variant MLP --backbone omnivore --ckpt checkpoints\error_recognition_best\MLP\omnivore\error_recognition_MLP_omnivore_recordings_epoch_33.pt --split recordings --threshold 0.4
+
+python -m core.evaluate --variant Transformer --backbone omnivore --ckpt checkpoints\error_recognition_best\Transformer\omnivore\error_recognition_Transformer_omnivore_step_epoch_9.pt --split step --threshold 0.6
+
+python -m core.evaluate --variant Transformer --backbone omnivore --ckpt checkpoints\error_recognition_best\Transformer\omnivore\error_recognition_Transformer_omnivore_recordings_epoch_31.pt --split recordings --threshold 0.4
+```
+
+### Extension
+#### Substep 1
+
+## Execution Workflow
+
+### Project Initialization
+
+Prepare the directory structure for model checkpoints and evaluation results:
+
+```bash
+cd multi_step_localization
+mkdir -p ./ckpt/ego4d/
+```
+
+### Training 
+
+Train the ActionFormer model using the 5-fold cross-validation configuration:
+
+```bash
+bash run_actionformer.sh
+```
+
+The script iterates over each fold, trains a separate model, and saves checkpoints under `./ckpt/ego4d/egovlp_recordings_egovlp_fold{N}/`.
+
+### Inference & Evaluation
+
+Generate raw prediction files (`.pkl`) for each fold to assess localization performance:
+
+```bash
+bash eval_actionformer.sh
+```
+
+### Data Consolidation
+
+Consolidate distributed fold results into a single comprehensive CSV file for sequential analysis:
+
+```bash
+python extract_predictions.py
+```
+
+Output: `dataset_substep2_predictions.csv`
+
+### 5. Step-Level Embedding Generation
+
+Transform localized segments into unique step-level embeddings:
+
+```bash
+python compute_step_embeddings.py
+```
+
+Output: `step_embeddings.npz`
+
+---
+
+#### Substep 2: Transformer baseline for task verification
+
+```bash
+cd task_verification
+python train_transformer.py
+
+```
+
+#### Substep 3: Task graph encoding + matching
+
+```bash
+CHECKPOINT = "pretrained/egovlp.pth" # download from EgoVLP release
+GRAPH_DIR  = "annotations/task_graphs"            
+VISUAL_NPZ = "step_embeddings.npz"        
+OUTPUT_NPZ = "text_task_graphs_v2.npz"
+
+cd task_verification
+python generate_text_features.py
+
+```
+
+#### Substep 4: GNN classifier
+
+```bash
+cd task_verification
+python train_GNN
+
+```
