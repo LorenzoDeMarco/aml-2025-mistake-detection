@@ -15,7 +15,7 @@ class Config(object):
         self.segment_length = 1
 
         self.lstm_hidden_dim = 256
-        self.lstm_layers = 2
+        self.lstm_layers = 1
 
         # Use this for 1 sec video features
         self.segment_features_directory = "data/"

@@ -92,101 +92,62 @@ To extend the baseline evaluation (V1 MLP and V2 Transformer) and analyze the mo
 | **Transformer** | Recordings | Temperature Error | 0.6719 | 0.1508 | 0.2405 | 0.1854 | 0.5483 |
 
 # Step 2
-### Methodology: Introduction of a Bidirectional LSTM Baseline for Error Recognition
+### Methodology: Introduction of a Bidirectional LSTM Baseline
 
-### Motivation and Design Rationale
+To bridge the gap between the purely frame-independent approach (MLP) and the computationally heavy global-attention approach (Transformer), we proposed and implemented a Bidirectional Long Short-Term Memory (Bi-LSTM) network as a robust third baseline.
 
-The CaptainCook4D paper establishes two baselines for the Supervised Error Recognition (SupervisedER) task: a simple MLP (V1) that processes each sub-segment feature independently, and a Transformer encoder (V2) that captures global temporal context via self-attention. While the Transformer addresses the sequential nature of procedure steps, self-attention is inherently permutation-equivariant — it has no built-in inductive bias for temporal direction. An error in a procedural activity is rarely isolated; it is the *consequence* of a causally-ordered sequence of actions. Forgetting an ingredient affects all subsequent steps; a timing mistake propagates forward in time, not backward.
+* **Architectural Motivation:** Cooking errors—such as incorrect timing or missed preparation steps—are inherently sequential. Unlike the MLP, which evaluates frames in isolation, the Bi-LSTM processes the chronological sequence of video features. By using a bidirectional configuration, the model evaluates each frame using both past and future contextual dependencies within the step, effectively capturing the flow of the action without the $O(N^2)$ complexity of a Self-Attention mechanism.
+* **Implementation Details:** The custom `LSTMModel` module ingests sequences of spatial-temporal features (extracted via the Omnivore backbone) into a single-layer Bi-LSTM with a hidden dimension of 256. The concatenated forward and backward hidden states are then passed through a fully connected sequential classifier equipped with ReLU activation and Dropout (0.3) to output frame-level binary probabilities.
+* **Pipeline Integration:** The evaluation parser (`argparse`) and the model factory (`fetch_model`) were extended to natively support the newly introduced `LSTM` variant. This ensured the new model could be seamlessly trained, validated, and evaluated across both the `step` and `recordings` splits using the exact same normalization strategies and metrics as the original baselines.
 
-This motivates the choice of a **Bidirectional LSTM (BiLSTM)** as the proposed baseline. Unlike the Transformer, recurrent architectures process sequences with an explicit notion of temporal order, maintaining a hidden state that summarizes the causal history of the execution up to each point. The bidirectional extension allows the model to also condition each timestep's prediction on future context — critical for identifying errors whose consequences only become apparent later in the sequence (e.g., a missing step that causes a downstream failure).
+**Commands**:
 
----
+```
+python -m train_er --variant LSTM --backbone omnivore --split step --batch_size 32 --lr 0.001 --num_epochs 50 --ckpt_directory checkpoints
 
-### Architecture
-
-The model is implemented in `core/models/lstm.py` as `LSTMModel` and follows a compact, regularized design optimized for the data-scarce regime of the CaptainCook4D dataset.
-
-**Input projection and residual connection.** The raw input features (dimensionality determined by the backbone via `fetch_input_dim`) are first projected into a `hidden_dim * 2 = 512`-dimensional space via a linear layer (`residual_proj`). This projection serves a dual purpose: it provides a residual shortcut that bypasses the LSTM and prevents vanishing gradients in early training, and it aligns the input dimensionality with the LSTM's output space to enable element-wise addition.
-
-**Bidirectional LSTM core.** The sequence is processed by a 2-layer bidirectional LSTM with `hidden_dim = 256` per direction, yielding a `hidden_dim * 2 = 512`-dimensional output at each timestep. Dropout of 0.3 is applied between layers (enabled only when `num_layers > 1`) to regularize the recurrent connections without suppressing the input layer's gradient flow.
-
-**Layer normalization with residual fusion.** The LSTM output is combined with the residual projection via element-wise addition and normalized through a `LayerNorm(512)` layer. This design — residual sum followed by normalization — mirrors the pre-LN convention used in modern Transformer architectures, stabilizing the gradient landscape and preventing the LSTM's hidden state from dominating the residual signal at initialization.
-
-**Classification head.** A two-layer MLP head (`Linear(512→128) → ReLU → Dropout(0.4) → Linear(128→1)`) produces a scalar logit per timestep, implementing a **many-to-many** classification scheme: every sub-segment in the sequence receives an independent error prediction. This is architecturally consistent with the V2 Transformer baseline and enables evaluation at both the sub-step and step aggregation levels.
-
-**Class imbalance correction via bias initialization.** The output layer's bias is initialized to `−log((1 − p) / p)` with a prior `p = 0.3`, encoding the empirical class distribution directly into the model's initial predictions. At initialization, the sigmoid of the output logit equals the prior probability of the positive class, preventing the model from spending early training epochs correcting a zero-bias miscalibration. This is a principled alternative to loss reweighting and avoids the gradient compression effects of asymmetric `pos_weight` scaling.
-
-The full architecture is summarized below:
-
-| Component | Details |
-|---|---|
-| Input dim | Backbone-dependent (Omnivore: 1024) |
-| Residual projection | `Linear(input_dim → 512)` |
-| LSTM | 2 layers, hidden=256, bidirectional, dropout=0.3 |
-| Post-LSTM fusion | `LayerNorm(LSTM_out + residual_proj)` |
-| Classifier | `Linear(512→128) → ReLU → Dropout(0.4) → Linear(128→1)` |
-| Output | Per-timestep scalar logit (many-to-many) |
-| Bias init | `−log((1−0.3)/0.3) ≈ −0.847` |
-
----
-
-### Training Configuration
-
-The model is trained under the same hyperparameter regime as the paper baselines to ensure a fair comparison:
-
-```bash
-python train_er.py \
-    --variant LSTM \
-    --backbone omnivore \
-    --lr 0.001 \
-    --num_epochs 50 \
-    --batch_size 16 \
-    --weight_decay 0.001
+python -m train_er --variant LSTM --backbone omnivore --split recordings --batch_size 32 --lr 0.001 --num_epochs 50 --ckpt_directory checkpoints
 ```
 
----
+### Baseline 3: Bidirectional LSTM Performance (Backbone: Omnivore)
 
-### Evaluation
+**Commands**:
 
-Evaluation is performed at the **Recordings** split, consistent with the paper's evaluation protocol, using the threshold `τ = 0.4` to match the operating point used for the V1 and V2 baselines:
+```
+python -m core.evaluate --variant LSTM --backbone omnivore --ckpt checkpoints\error_recognition_best\LSTM\omnivore\error_recognition_step_omnivore_LSTM_video_epoch_16.pt --split step --threshold 0.6
 
-```bash
-python -m core.evaluate \
-    --variant LSTM \
-    --backbone omnivore \
-    --ckpt checkpoints/error_recognition/LSTM/omnivore/error_recognition_recordings_omnivore_LSTM_video_best.pt \
-    --split recordings \
-    --threshold 0.4
+python -m core.evaluate --variant LSTM --backbone omnivore --ckpt checkpoints\error_recognition_best\LSTM\omnivore\error_recognition_recordings_omnivore_LSTM_video_epoch_5.pt --split recordings --threshold 0.4
 ```
 
----
+#### Table 1: Global Evaluation Metrics
 
-### Results and Comparison
+This table reports the overall Sub-Step and Step level metrics across both data splits.
 
-The table below reports performance at the **Recordings** split for all three models — MLP (V1), Transformer (V2), and the proposed BiLSTM — at both the sub-step and step aggregation levels.
 
-| Model | Level | Accuracy | Precision | Recall | F1 | AUC | PR-AUC |
-|---|---|---|---|---|---|---|---|
-| MLP | Sub-Step | 0.5735 | 0.3965 | 0.5688 | 0.4673 | 0.5988 | 0.3673 |
-| MLP | Step | 0.5037 | 0.4091 | 0.8589 | **0.5542** | 0.6303 | 0.4020 |
-| Transformer | Sub-Step | 0.6450 | 0.4491 | 0.3512 | 0.3942 | 0.6254 | 0.3711 |
-| Transformer | Step | 0.6140 | 0.4541 | 0.3693 | 0.4073 | 0.6227 | 0.3942 |
-| **BiLSTM** | **Sub-Step** | 0.6152 | 0.4323 | **0.5438** | **0.4817** | **0.6436** | **0.3851** |
-| **BiLSTM** | **Step** | 0.5589 | 0.4314 | **0.7178** | **0.5389** | **0.6527** | **0.4110** |
+| Split          | Threshold | Level    | Accuracy | Precision | Recall | F1-Score | AUC    | PR_AUC |
+| :------------- | :-------- | :------- | :------- | :-------- | :----- | :------- | :----- | :----- |
+| **Step**       | 0.6       | Sub Step | 0.6952   | 0.4677    | 0.6439 | 0.5418   | 0.7474 | 0.4008 |
+| **Step**       | 0.6       | Step     | 0.7456   | 0.5839    | 0.6426 | 0.6119   | 0.8020 | 0.4868 |
+| **Recordings** | 0.4       | Sub Step | 0.6405   | 0.4604    | 0.5435 | 0.4985   | 0.6628 | 0.4003 |
+| **Recordings** | 0.4       | Step     | 0.5514   | 0.4318    | 0.7884 | 0.5580   | 0.6516 | 0.4164 |
 
-#### Discussion
+#### Table 2: Performance per Error Type (Step Level)
 
-**BiLSTM vs. MLP.** The MLP baseline treats each sub-segment independently, with no temporal context. Its high Step-level Recall (0.859) is a symptom of majority-class bias rather than genuine discriminative power: the model defaults to predicting errors indiscriminately, inflating sensitivity at the cost of Precision (0.409) and Accuracy (0.504 — below random chance on a balanced split). The BiLSTM corrects this imbalance through its recurrent memory, achieving a substantially higher AUC (+0.023) and PR-AUC (+0.009) while recovering a more balanced operating point (Recall 0.718, Precision 0.431, F1 0.539 at Step level).
+This table breaks down the LSTM's ability to classify specific error categories by combining the target error samples with the "Normal" base samples.
 
-**BiLSTM vs. Transformer.** The comparison with V2 reveals the core architectural advantage of recurrent processing for this task. The Transformer's self-attention mechanism, while powerful in data-rich regimes, is permutation-equivariant — it has no built-in inductive bias for temporal ordering, relying entirely on learned positional encodings to distinguish "step 2 before step 5" from "step 5 before step 2". On CaptainCook4D's limited training set, this inductive bias deficit translates directly into conservative, low-recall predictions: the Transformer achieves only 0.369 Recall and 0.407 F1 at Step level, with an AUC of 0.623.
 
-The BiLSTM outperforms the Transformer on every metric at both evaluation levels. The AUC improvement is particularly meaningful (+0.030 at Sub-Step, +0.030 at Step) as it is threshold-independent and reflects genuine improvement in probabilistic discrimination. The Recall gap is the most operationally significant: the BiLSTM detects 71.8% of erroneous recipe executions vs. the Transformer's 36.9% — a near-doubling of sensitivity at comparable Precision.
-
-**Why temporal directionality matters here.** Procedural errors in CaptainCook4D are causally structured: an incorrect action at step $t$ typically manifests in visual evidence distributed across the sub-segments of steps $t, t+1, \ldots, t+k$. The forward LSTM accumulates a running summary of the causal execution history; the backward LSTM reads the sequence in reverse, propagating evidence of downstream consequences back toward their root cause. This bidirectional causal-consequential reasoning is precisely the inductive bias required for mistake detection in procedural activities — and it is what the permutation-equivariant Transformer lacks by design.
-
-The residual connection and bias initialization further contribute to the BiLSTM's advantage over the plain MLP by preventing early-training majority-class collapse, ensuring that the recurrent layers receive stable, informative gradients from the first epoch.
-
-**Summary.** The proposed BiLSTM baseline consistently outperforms both V1 (MLP) and V2 (Transformer) on the Recordings split across AUC, PR-AUC, and F1, establishing a new competitive reference for the SupervisedER task. Its performance advantage is most pronounced in high-sensitivity operating regimes — the task setting where missing a procedural error carries the highest cost — making it the most practically relevant of the three baselines for real-world deployment scenarios.
+| Split          | Error Type        | Accuracy | Precision | Recall | F1-Score | AUC    |
+| :------------- | :---------------- | :------- | :-------- | :----- | :------- | :----- |
+| **Step**       | Preparation Error | 0.7778   | 0.4412    | 0.7143 | 0.5455   | 0.8360 |
+| **Step**       | Technique Error   | 0.7663   | 0.4213    | 0.6535 | 0.5123   | 0.7957 |
+| **Step**       | Measurement Error | 0.7764   | 0.4093    | 0.6991 | 0.5163   | 0.8316 |
+| **Step**       | Timing Error      | 0.7725   | 0.3838    | 0.6698 | 0.4880   | 0.8147 |
+| **Step**       | Temperature Error | 0.7823   | 0.3486    | 0.7176 | 0.4692   | 0.8382 |
+|                |                   |          |           |        |          |        |
+| **Recordings** | Preparation Error | 0.5018   | 0.2775    | 0.8000 | 0.4120   | 0.6315 |
+| **Recordings** | Technique Error   | 0.4818   | 0.2515    | 0.7119 | 0.3717   | 0.5954 |
+| **Recordings** | Measurement Error | 0.4954   | 0.2669    | 0.7778 | 0.3974   | 0.6603 |
+| **Recordings** | Timing Error      | 0.4741   | 0.2114    | 0.7363 | 0.3284   | 0.6004 |
+| **Recordings** | Temperature Error | 0.4715   | 0.1935    | 0.7595 | 0.3085   | 0.6069 |
 
 ## Feature extraction
 This module handles the transformation of raw videos into dense vector representations (features) using **EgoVLP**, an architecture optimized for first-person (egocentric) video analysis. The extraction process has been engineered around three core principles to maximize the effectiveness of the downstream mistake detection model.

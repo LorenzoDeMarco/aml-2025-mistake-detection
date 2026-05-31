@@ -54,7 +54,8 @@ def fetch_model(config):
             model = ErFormer(config)
     elif config.variant == const.LSTM_VARIANT:
         if config.backbone in [const.OMNIVORE, const.RESNET3D, const.X3D, const.SLOWFAST, const.IMAGEBIND]:
-            model = LSTMModel(config)
+            input_dim = fetch_input_dim(config)
+            model = LSTMModel(input_dim, config.lstm_hidden_dim, config.lstm_layers)
     assert model is not None, f"Model not found for variant: {config.variant} and backbone: {config.backbone}"
     model.to(config.device)
     return model
